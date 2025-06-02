@@ -56,6 +56,19 @@
             background: #005ecb;
         }
         
+        #stopButton {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            font-size: 16px;
+            background: #FF3B30;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+        
         .hidden {
             display: none;
         }
@@ -64,7 +77,8 @@
 <body>
     <div id="videoContainer">
         <video id="video" autoplay muted playsinline></video>
-        <div id="clock" class="hidden">00:00:00</div>
+        <div id="clock" class="hidden">00:00:00.0</div>
+        <button id="stopButton" class="hidden">Stop Recording</button>
         <button id="startButton">Start Camera</button>
     </div>
 
@@ -72,9 +86,12 @@
         const video = document.getElementById('video');
         const clock = document.getElementById('clock');
         const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
         
         let startTime = null;
         let clockInterval = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
         
         // Start camera when button is clicked
         startButton.addEventListener('click', async () => {
@@ -88,10 +105,51 @@
                     },
                     audio: false
                 });
+        
+        // Stop recording when button is clicked
+        stopButton.addEventListener('click', () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    // Create download link
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `beach-volleyball-${Date.now()}.webm`;
+                    a.click();
+                    
+                    // Reset app
+                    stopButton.classList.add('hidden');
+                    startButton.classList.remove('hidden');
+                    clock.classList.add('hidden');
+                    clearInterval(clockInterval);
+                    
+                    // Stop camera stream
+                    if (video.srcObject) {
+                        video.srcObject.getTracks().forEach(track => track.stop());
+                        video.srcObject = null;
+                    }
+                    
+                    recordedChunks = [];
+                };
+            }
+        });
                 
                 video.srcObject = stream;
                 startButton.classList.add('hidden');
+                stopButton.classList.remove('hidden');
                 clock.classList.remove('hidden');
+                
+                // Start recording
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        recordedChunks.push(event.data);
+                    }
+                };
+                mediaRecorder.start();
                 
                 // Start the timer
                 startTime = Date.now();
@@ -111,14 +169,13 @@
             const hours = Math.floor(totalSeconds / 3600);
             const minutes = Math.floor((totalSeconds % 3600) / 60);
             const seconds = Math.floor(totalSeconds % 60);
-            const hundredths = Math.floor((elapsed % 1000) / 10);
+            const tenths = Math.floor((elapsed % 1000) / 100);
             
             const displayHours = hours.toString().padStart(2, '0');
             const displayMinutes = minutes.toString().padStart(2, '0');
             const displaySeconds = seconds.toString().padStart(2, '0');
-            const displayHundredths = hundredths.toString().padStart(2, '0');
             
-            clock.textContent = `${displayHours}:${displayMinutes}:${displaySeconds}.${displayHundredths}`;
+            clock.textContent = `${displayHours}:${displayMinutes}:${displaySeconds}.${tenths}`;
         }
     </script>
 </body>
