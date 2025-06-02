@@ -69,6 +69,89 @@
             cursor: pointer;
         }
         
+        #playbackContainer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: black;
+            z-index: 10;
+        }
+        
+        #playbackVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        #playbackControls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        #playbackControls button {
+            padding: 8px 15px;
+            background: #007AFF;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        #speedSelector {
+            padding: 5px;
+            border-radius: 5px;
+            background: white;
+            border: none;
+        }
+        
+        #videoLibrary {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            z-index: 5;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        
+        #videoList {
+            color: white;
+        }
+        
+        .videoItem {
+            background: rgba(255, 255, 255, 0.1);
+            margin: 10px 0;
+            padding: 15px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        
+        .videoItem:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        #searchBox {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            border: none;
+            font-size: 16px;
+        }
+        
         .hidden {
             display: none;
         }
@@ -79,7 +162,34 @@
         <video id="video" autoplay muted playsinline></video>
         <div id="clock" class="hidden">00:00:00.0</div>
         <button id="stopButton" class="hidden">Stop Recording</button>
+        <button id="libraryButton" class="hidden">Library</button>
         <button id="startButton">Start Camera</button>
+    </div>
+    
+    <!-- Video Library -->
+    <div id="videoLibrary" class="hidden">
+        <input type="text" id="searchBox" placeholder="Search videos...">
+        <button onclick="closeLibrary()" style="position: absolute; top: 20px; right: 20px; padding: 8px 12px; background: #FF3B30; color: white; border: none; border-radius: 5px;">Close</button>
+        <div id="videoList"></div>
+    </div>
+    
+    <!-- Video Playback -->
+    <div id="playbackContainer" class="hidden">
+        <video id="playbackVideo" controls></video>
+        <div id="playbackControls">
+            <button onclick="playPause()">Play/Pause</button>
+            <select id="speedSelector" onchange="changeSpeed()">
+                <option value="0.1">0.1x</option>
+                <option value="0.25">0.25x</option>
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+                <option value="5">5x</option>
+                <option value="10">10x</option>
+            </select>
+            <button onclick="closePlayback()">Close</button>
+        </div>
     </div>
 
     <script>
@@ -87,11 +197,13 @@
         const clock = document.getElementById('clock');
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
+        const libraryButton = document.getElementById('libraryButton');
         
         let startTime = null;
         let clockInterval = null;
         let mediaRecorder = null;
         let recordedChunks = [];
+        let videoDatabase = [];
         
         // Start camera when button is clicked
         startButton.addEventListener('click', async () => {
@@ -106,22 +218,102 @@
                     audio: false
                 });
         
+        // Show video library
+        libraryButton.addEventListener('click', () => {
+            document.getElementById('videoLibrary').classList.remove('hidden');
+            displayVideoList();
+        });
+        
+        // Search functionality
+        document.getElementById('searchBox').addEventListener('input', (e) => {
+            displayVideoList(e.target.value);
+        });
+        
+        function displayVideoList(searchTerm = '') {
+            const videoList = document.getElementById('videoList');
+            videoList.innerHTML = '';
+            
+            const filteredVideos = videoDatabase.filter(video => 
+                video.name.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+            
+            if (filteredVideos.length === 0) {
+                videoList.innerHTML = '<p style="color: white;">No videos found</p>';
+                return;
+            }
+            
+            filteredVideos.forEach((video, index) => {
+                const videoItem = document.createElement('div');
+                videoItem.className = 'videoItem';
+                videoItem.innerHTML = `
+                    <h3>${video.name}</h3>
+                    <p>Recorded: ${new Date(video.date).toLocaleString()}</p>
+                `;
+                videoItem.onclick = () => playVideo(video);
+                videoList.appendChild(videoItem);
+            });
+        }
+        
+        function playVideo(videoData) {
+            const playbackVideo = document.getElementById('playbackVideo');
+            playbackVideo.src = videoData.url;
+            document.getElementById('playbackContainer').classList.remove('hidden');
+            document.getElementById('videoLibrary').classList.add('hidden');
+        }
+        
+        function closeLibrary() {
+            document.getElementById('videoLibrary').classList.add('hidden');
+        }
+        
+        function closePlayback() {
+            document.getElementById('playbackContainer').classList.add('hidden');
+            document.getElementById('playbackVideo').pause();
+        }
+        
+        function playPause() {
+            const playbackVideo = document.getElementById('playbackVideo');
+            if (playbackVideo.paused) {
+                playbackVideo.play();
+            } else {
+                playbackVideo.pause();
+            }
+        }
+        
+        function changeSpeed() {
+            const speedSelector = document.getElementById('speedSelector');
+            const playbackVideo = document.getElementById('playbackVideo');
+            playbackVideo.playbackRate = parseFloat(speedSelector.value);
+        }
+        
         // Stop recording when button is clicked
         stopButton.addEventListener('click', () => {
             if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.stop();
                 mediaRecorder.onstop = () => {
                     const blob = new Blob(recordedChunks, { type: 'video/webm' });
-                    const url = URL.createObjectURL(blob);
                     
-                    // Create download link
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `beach-volleyball-${Date.now()}.webm`;
-                    a.click();
+                    // Prompt for video name
+                    const videoName = prompt('Enter video name:', `Game_${new Date().toLocaleDateString()}_${new Date().toLocaleTimeString()}`);
+                    if (videoName) {
+                        // Store in memory
+                        const videoData = {
+                            name: videoName,
+                            blob: blob,
+                            date: new Date().toISOString(),
+                            url: URL.createObjectURL(blob)
+                        };
+                        videoDatabase.push(videoData);
+                        
+                        // Also download
+                        const a = document.createElement('a');
+                        a.href = videoData.url;
+                        a.download = `${videoName}.webm`;
+                        a.click();
+                    }
                     
                     // Reset app
                     stopButton.classList.add('hidden');
+                    libraryButton.classList.add('hidden');
                     startButton.classList.remove('hidden');
                     clock.classList.add('hidden');
                     clearInterval(clockInterval);
@@ -140,6 +332,7 @@
                 video.srcObject = stream;
                 startButton.classList.add('hidden');
                 stopButton.classList.remove('hidden');
+                libraryButton.classList.remove('hidden');
                 clock.classList.remove('hidden');
                 
                 // Start recording
