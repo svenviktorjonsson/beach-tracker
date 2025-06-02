@@ -107,15 +107,18 @@
             if (!startTime) return;
             
             const elapsed = Date.now() - startTime;
-            const seconds = Math.floor(elapsed / 1000);
-            const minutes = Math.floor(seconds / 60);
-            const hours = Math.floor(minutes / 60);
+            const totalSeconds = elapsed / 1000;
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = Math.floor(totalSeconds % 60);
+            const hundredths = Math.floor((elapsed % 1000) / 10);
             
             const displayHours = hours.toString().padStart(2, '0');
-            const displayMinutes = (minutes % 60).toString().padStart(2, '0');
-            const displaySeconds = (seconds % 60).toString().padStart(2, '0');
+            const displayMinutes = minutes.toString().padStart(2, '0');
+            const displaySeconds = seconds.toString().padStart(2, '0');
+            const displayHundredths = hundredths.toString().padStart(2, '0');
             
-            clock.textContent = `${displayHours}:${displayMinutes}:${displaySeconds}`;
+            clock.textContent = `${displayHours}:${displayMinutes}:${displaySeconds}.${displayHundredths}`;
         }
     </script>
 </body>
