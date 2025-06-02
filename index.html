@@ -7,23 +7,36 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- Main Menu -->
     <div id="mainMenu">
         <h1 id="appTitle">🏐 Beach Volleyball<br>Tracker</h1>
         <button class="menuButton" onclick="showAnalysis()">📊 Analysis</button>
         <button class="menuButton" onclick="showRecord()">🎥 Record</button>
         <button class="menuButton" onclick="showStatistics()">📈 Statistics</button>
     </div>
-    
-    <!-- Analysis Interface -->
+
     <div id="analysisContainer" class="hidden">
         <div id="analysisVideo">
-            <video id="playbackVideo" controls></video>
-            <div id="videoTime">00:00:00.0</div>
+            <div id="videoPlaceholder">
+                <p>Select a video from the list below to start analysis.</p>
+            </div>
+            <video id="playbackVideo" preload="metadata" style="display: none;"></video>
+            <div id="videoTime" style="display: none;">00:00:00.0</div>
         </div>
-        <div id="analysisControls">
-            <input type="file" id="videoFileInput" accept="video/*" style="margin-bottom: 10px;">
-            <div style="margin-bottom: 10px;">
+
+        <div id="analysisToolbox">
+            <div id="videoSearchArea">
+                <input type="search" id="videoSearchInput" placeholder="Search recorded videos...">
+            </div>
+
+            <div id="videoListContainer">
+                </div>
+
+            <div id="customSeekBarContainer" style="display: none; width: 100%; padding: 5px 0; box-sizing: border-box;">
+                <input type="range" id="customSeekBar" value="0" min="0" step="0.1" style="width: 100%;">
+            </div>
+
+            <div id="currentVideoControls">
+                <p style="margin-top:10px; margin-bottom: 5px;">Playback Controls:</p>
                 <button onclick="playPause()">Play/Pause</button>
                 <select id="speedSelector" onchange="changeSpeed()">
                     <option value="0.1">0.1x</option>
@@ -35,25 +48,69 @@
                     <option value="5">5x</option>
                     <option value="10">10x</option>
                 </select>
+                <p style="margin-top:15px; margin-bottom: 5px;">Load external video:</p>
+                <input type="file" id="videoFileInput" accept="video/*">
             </div>
-            <button onclick="showMainMenu()">← Back to Menu</button>
+            <button onclick="showMainMenu()" class="backButton" style="margin-top: 20px; width: 100%; box-sizing: border-box;">← Back to Menu</button>
         </div>
     </div>
-    
-    <!-- Recording Interface -->
+
     <div id="videoContainer" class="hidden">
         <video id="video" autoplay muted playsinline></video>
         <div id="clock" class="hidden">00:00:00.0</div>
         <button id="stopButton" class="hidden">Stop Recording</button>
         <button id="startButton">Start Camera</button>
-        <button onclick="showMainMenu()" class="backButton">← Back</button>
-    </div>
-    
-    <!-- Statistics -->
+        <button onclick="showMainMenu()" class="backButton">← Back</button> </div>
+
     <div id="statisticsContainer" class="hidden">
         <h2>📈 Video Statistics</h2>
-        <button onclick="showMainMenu()" class="backButton">← Back</button>
-        <div id="statisticsContent">No videos recorded yet</div>
+        <div id="statsSearchArea">
+            <input type="search" id="statsSearchInput" placeholder="Filter videos for statistics...">
+        </div>
+        <div id="statsVideoCount">Videos included: 0</div>
+        <table id="statsTable">
+            <thead>
+                <tr>
+                    <th>Property</th>
+                    <th>Min</th>
+                    <th>Max</th>
+                    <th>Average</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Duration (s)</td>
+                    <td id="statDurationMin">-</td>
+                    <td id="statDurationMax">-</td>
+                    <td id="statDurationAvg">-</td>
+                </tr>
+                <tr>
+                    <td>Width (px)</td>
+                    <td id="statWidthMin">-</td>
+                    <td id="statWidthMax">-</td>
+                    <td id="statWidthAvg">-</td>
+                </tr>
+                <tr>
+                    <td>Height (px)</td>
+                    <td id="statHeightMin">-</td>
+                    <td id="statHeightMax">-</td>
+                    <td id="statHeightAvg">-</td>
+                </tr>
+                <tr>
+                    <td>Pixels (MP)</td>
+                    <td id="statPixelsMin">-</td>
+                    <td id="statPixelsMax">-</td>
+                    <td id="statPixelsAvg">-</td>
+                </tr>
+                <tr>
+                    <td>FPS</td>
+                    <td id="statFpsMin">-</td>
+                    <td id="statFpsMax">-</td>
+                    <td id="statFpsAvg">-</td>
+                </tr>
+            </tbody>
+        </table>
+        <button onclick="showMainMenu()" class="backButton" style="margin-top: 20px; width:100%; box-sizing:border-box;">← Back to Menu</button>
     </div>
 
     <script src="script.js"></script>
