@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beach Volleyball Tracker</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: black;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        
+        #videoContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        #clock {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 15px;
+            border-radius: 5px;
+            text-shadow: 1px 1px 2px black;
+        }
+        
+        #startButton {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 15px 30px;
+            font-size: 18px;
+            background: #007AFF;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+        
+        #startButton:hover {
+            background: #005ecb;
+        }
+        
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="videoContainer">
+        <video id="video" autoplay muted playsinline></video>
+        <div id="clock" class="hidden">00:00:00</div>
+        <button id="startButton">Start Camera</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const clock = document.getElementById('clock');
+        const startButton = document.getElementById('startButton');
+        
+        let startTime = null;
+        let clockInterval = null;
+        
+        // Start camera when button is clicked
+        startButton.addEventListener('click', async () => {
+            try {
+                // Request camera access (rear camera preferred for recording)
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment', // Use rear camera
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                });
+                
+                video.srcObject = stream;
+                startButton.classList.add('hidden');
+                clock.classList.remove('hidden');
+                
+                // Start the timer
+                startTime = Date.now();
+                clockInterval = setInterval(updateClock, 100);
+                
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                alert('Could not access camera. Please check permissions.');
+            }
+        });
+        
+        function updateClock() {
+            if (!startTime) return;
+            
+            const elapsed = Date.now() - startTime;
+            const seconds = Math.floor(elapsed / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            
+            const displayHours = hours.toString().padStart(2, '0');
+            const displayMinutes = (minutes % 60).toString().padStart(2, '0');
+            const displaySeconds = (seconds % 60).toString().padStart(2, '0');
+            
+            clock.textContent = `${displayHours}:${displayMinutes}:${displaySeconds}`;
+        }
+    </script>
+</body>
+</html>
