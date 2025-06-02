@@ -1,0 +1,406 @@
+=== Project Directory Structure ===
+Root: C:\Users\viktor.jonsson\OneDrive - CellMax Technologies AB\Documents\Repositories\svenviktorjonsson\beach-tracker
+Relevant files and folders (excluding specified patterns):
+
+.
+├── index.html
+├── package-lock.json
+├── package.json
+├── project_content.txt
+├── readme.md
+├── script.js
+├── style.css
+
+
+=== File Contents ===
+
+=== index.html ===
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beach Volleyball Tracker</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Main Menu -->
+    <div id="mainMenu">
+        <h1 id="appTitle">🏐 Beach Volleyball<br>Tracker</h1>
+        <button class="menuButton" onclick="showAnalysis()">📊 Analysis</button>
+        <button class="menuButton" onclick="showRecord()">🎥 Record</button>
+        <button class="menuButton" onclick="showStatistics()">📈 Statistics</button>
+    </div>
+    
+    <!-- Analysis Interface -->
+    <div id="analysisContainer" class="hidden">
+        <div id="analysisVideo">
+            <video id="playbackVideo" controls></video>
+            <div id="videoTime">00:00:00.0</div>
+        </div>
+        <div id="analysisControls">
+            <input type="file" id="videoFileInput" accept="video/*" style="margin-bottom: 10px;">
+            <div style="margin-bottom: 10px;">
+                <button onclick="playPause()">Play/Pause</button>
+                <select id="speedSelector" onchange="changeSpeed()">
+                    <option value="0.1">0.1x</option>
+                    <option value="0.25">0.25x</option>
+                    <option value="0.5">0.5x</option>
+                    <option value="1" selected>1x</option>
+                    <option value="1.5">1.5x</option>
+                    <option value="2">2x</option>
+                    <option value="5">5x</option>
+                    <option value="10">10x</option>
+                </select>
+            </div>
+            <button onclick="showMainMenu()">← Back to Menu</button>
+        </div>
+    </div>
+    
+    <!-- Recording Interface -->
+    <div id="videoContainer" class="hidden">
+        <video id="video" autoplay muted playsinline></video>
+        <div id="clock" class="hidden">00:00:00.0</div>
+        <button id="stopButton" class="hidden">Stop Recording</button>
+        <button id="startButton">Start Camera</button>
+        <button onclick="showMainMenu()" class="backButton">← Back</button>
+    </div>
+    
+    <!-- Statistics -->
+    <div id="statisticsContainer" class="hidden">
+        <h2>📈 Video Statistics</h2>
+        <button onclick="showMainMenu()" class="backButton">← Back</button>
+        <div id="statisticsContent">No videos recorded yet</div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
+=== package-lock.json ===
+{
+  "name": "beach-tracker",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {}
+}
+
+
+=== package.json ===
+{}
+
+
+=== project_content.txt ===
+--- CONTENT EXCLUDED (listed in exclude_files) ---
+
+
+=== readme.md ===
+
+
+=== script.js ===
+// Global variables
+let video, clock, startButton, stopButton, playbackVideo, videoTime;
+let startTime = null;
+let clockInterval = null;
+let videoTimeInterval = null;
+let mediaRecorder = null;
+let recordedChunks = [];
+let videoDatabase = [];
+let videoDurations = [];
+
+
+// Menu functions - make them global
+function showMainMenu() {
+    document.getElementById('mainMenu').classList.remove('hidden');
+    document.getElementById('videoContainer').classList.add('hidden');
+    document.getElementById('analysisContainer').classList.add('hidden');
+    document.getElementById('statisticsContainer').classList.add('hidden');
+}
+
+function showAnalysis() {
+    document.getElementById('mainMenu').classList.add('hidden');
+    document.getElementById('analysisContainer').classList.remove('hidden');
+}
+
+function showRecord() {
+    document.getElementById('mainMenu').classList.add('hidden');
+    document.getElementById('videoContainer').classList.remove('hidden');
+}
+
+function showStatistics() {
+    document.getElementById('mainMenu').classList.add('hidden');
+    document.getElementById('statisticsContainer').classList.remove('hidden');
+}
+
+function playPause() {
+    const playbackVideo = document.getElementById('playbackVideo');
+    if (playbackVideo.paused) {
+        playbackVideo.play();
+    } else {
+        playbackVideo.pause();
+    }
+}
+
+function changeSpeed() {
+    const speedSelector = document.getElementById('speedSelector');
+    const playbackVideo = document.getElementById('playbackVideo');
+    playbackVideo.playbackRate = parseFloat(speedSelector.value);
+}
+
+// Make functions available globally
+window.showMainMenu = showMainMenu;
+window.showAnalysis = showAnalysis;
+window.showRecord = showRecord;
+window.showStatistics = showStatistics;
+window.playPause = playPause;
+window.changeSpeed = changeSpeed;
+
+=== style.css ===
+body {
+    margin: 0;
+    padding: 0;
+    background: black;
+    font-family: Arial, sans-serif;
+    overflow: hidden;
+}
+
+/* Main Menu */
+#mainMenu {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 20;
+}
+
+#appTitle {
+    color: white;
+    font-size: 32px;
+    font-weight: bold;
+    margin-bottom: 50px;
+    text-align: center;
+}
+
+.menuButton {
+    width: 250px;
+    padding: 20px;
+    margin: 15px;
+    font-size: 20px;
+    font-weight: bold;
+    background: rgba(255, 255, 255, 0.9);
+    color: #333;
+    border: none;
+    border-radius: 15px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.menuButton:hover {
+    background: white;
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+/* Recording Interface */
+#videoContainer {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+}
+
+#video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+#clock {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    color: white;
+    font-size: 24px;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 10px 15px;
+    border-radius: 5px;
+    text-shadow: 1px 1px 2px black;
+}
+
+#startButton {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 15px 30px;
+    font-size: 18px;
+    background: #007AFF;
+    color: white;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+#stopButton {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    padding: 10px 20px;
+    font-size: 16px;
+    background: #FF3B30;
+    color: white;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+.backButton {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    padding: 10px 15px;
+    background: #666;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+/* Analysis Interface */
+#analysisContainer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #222;
+    z-index: 15;
+    display: flex;
+    flex-direction: column;
+}
+
+#analysisVideo {
+    flex: 1;
+    position: relative;
+    background: black;
+}
+
+#playbackVideo {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+#videoTime {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    color: white;
+    font-size: 24px;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 10px 15px;
+    border-radius: 5px;
+    text-shadow: 1px 1px 2px black;
+}
+
+#analysisControls {
+    background: rgba(0, 0, 0, 0.9);
+    padding: 20px;
+    color: white;
+    min-height: 200px;
+}
+
+#analysisControls button {
+    padding: 10px 15px;
+    margin: 5px;
+    background: #007AFF;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+#analysisControls select {
+    padding: 8px;
+    margin: 5px;
+    border-radius: 5px;
+    border: none;
+}
+
+#analysisControls input[type="file"] {
+    width: 100%;
+    padding: 10px;
+    margin: 5px 0;
+    background: white;
+    border: none;
+    border-radius: 5px;
+}
+
+#recordedVideosList {
+    max-height: 100px;
+    overflow-y: auto;
+    margin: 10px 0;
+}
+
+.videoItem {
+    background: rgba(255, 255, 255, 0.1);
+    margin: 5px 0;
+    padding: 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.videoItem:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* Statistics */
+#statisticsContainer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.95);
+    z-index: 15;
+    padding: 20px;
+    overflow-y: auto;
+    color: white;
+}
+
+#statisticsContainer h2 {
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+.statItem {
+    background: rgba(255, 255, 255, 0.1);
+    margin: 10px 0;
+    padding: 20px;
+    border-radius: 10px;
+    font-size: 18px;
+}
+
+.statLabel {
+    font-weight: bold;
+    color: #4CAF50;
+}
+
+.statValue {
+    font-size: 24px;
+    margin-top: 5px;
+}
+
+/* Utility */
+.hidden {
+    display: none;
+}
+

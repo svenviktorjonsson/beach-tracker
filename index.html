@@ -4,226 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Beach Volleyball Tracker</title>
-    <style>
-        #mainMenu {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            z-index: 20;
-        }
-        
-        #appTitle {
-            color: white;
-            font-size: 32px;
-            font-weight: bold;
-            margin-bottom: 50px;
-            text-align: center;
-        }
-        
-        .menuButton {
-            width: 250px;
-            padding: 20px;
-            margin: 15px;
-            font-size: 20px;
-            font-weight: bold;
-            background: rgba(255, 255, 255, 0.9);
-            color: #333;
-            border: none;
-            border-radius: 15px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .menuButton:hover {
-            background: white;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
-        }
-        
-        #statisticsContainer {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.95);
-            z-index: 15;
-            padding: 20px;
-            overflow-y: auto;
-            color: white;
-        }
-        
-        .statItem {
-            background: rgba(255, 255, 255, 0.1);
-            margin: 10px 0;
-            padding: 20px;
-            border-radius: 10px;
-            font-size: 18px;
-        }
-        
-        .statLabel {
-            font-weight: bold;
-            color: #4CAF50;
-        }
-        
-        body {
-            margin: 0;
-            padding: 0;
-            background: black;
-            font-family: Arial, sans-serif;
-            overflow: hidden;
-        }
-        
-        #videoContainer {
-            position: relative;
-            width: 100vw;
-            height: 100vh;
-        }
-        
-        #video {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-        
-        #clock {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            color: white;
-            font-size: 24px;
-            font-weight: bold;
-            background: rgba(0, 0, 0, 0.5);
-            padding: 10px 15px;
-            border-radius: 5px;
-            text-shadow: 1px 1px 2px black;
-        }
-        
-        #startButton {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            padding: 15px 30px;
-            font-size: 18px;
-            background: #007AFF;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-        }
-        
-        #startButton:hover {
-            background: #005ecb;
-        }
-        
-        #stopButton {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            padding: 10px 20px;
-            font-size: 16px;
-            background: #FF3B30;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-        }
-        
-        #playbackContainer {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: black;
-            z-index: 10;
-        }
-        
-        #playbackVideo {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-        
-        #playbackControls {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            right: 20px;
-            background: rgba(0, 0, 0, 0.8);
-            padding: 15px;
-            border-radius: 10px;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        
-        #playbackControls button {
-            padding: 8px 15px;
-            background: #007AFF;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-        
-        #speedSelector {
-            padding: 5px;
-            border-radius: 5px;
-            background: white;
-            border: none;
-        }
-        
-        #videoLibrary {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.95);
-            z-index: 5;
-            padding: 20px;
-            overflow-y: auto;
-        }
-        
-        #videoList {
-            color: white;
-        }
-        
-        .videoItem {
-            background: rgba(255, 255, 255, 0.1);
-            margin: 10px 0;
-            padding: 15px;
-            border-radius: 8px;
-            cursor: pointer;
-        }
-        
-        .videoItem:hover {
-            background: rgba(255, 255, 255, 0.2);
-        }
-        
-        #searchBox {
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 20px;
-            border-radius: 5px;
-            border: none;
-            font-size: 16px;
-        }
-        
-        .hidden {
-            display: none;
-        }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <!-- Main Menu -->
@@ -234,299 +15,47 @@
         <button class="menuButton" onclick="showStatistics()">📈 Statistics</button>
     </div>
     
+    <!-- Analysis Interface -->
+    <div id="analysisContainer" class="hidden">
+        <div id="analysisVideo">
+            <video id="playbackVideo" controls></video>
+            <div id="videoTime">00:00:00.0</div>
+        </div>
+        <div id="analysisControls">
+            <input type="file" id="videoFileInput" accept="video/*" style="margin-bottom: 10px;">
+            <div style="margin-bottom: 10px;">
+                <button onclick="playPause()">Play/Pause</button>
+                <select id="speedSelector" onchange="changeSpeed()">
+                    <option value="0.1">0.1x</option>
+                    <option value="0.25">0.25x</option>
+                    <option value="0.5">0.5x</option>
+                    <option value="1" selected>1x</option>
+                    <option value="1.5">1.5x</option>
+                    <option value="2">2x</option>
+                    <option value="5">5x</option>
+                    <option value="10">10x</option>
+                </select>
+            </div>
+            <button onclick="showMainMenu()">← Back to Menu</button>
+        </div>
+    </div>
+    
     <!-- Recording Interface -->
     <div id="videoContainer" class="hidden">
         <video id="video" autoplay muted playsinline></video>
         <div id="clock" class="hidden">00:00:00.0</div>
         <button id="stopButton" class="hidden">Stop Recording</button>
-        <button id="libraryButton" class="hidden">Library</button>
         <button id="startButton">Start Camera</button>
-        <button onclick="showMainMenu()" style="position: absolute; top: 20px; left: 20px; padding: 10px 15px; background: #666; color: white; border: none; border-radius: 8px;">← Back</button>
+        <button onclick="showMainMenu()" class="backButton">← Back</button>
     </div>
     
     <!-- Statistics -->
     <div id="statisticsContainer" class="hidden">
-        <h2 style="text-align: center; margin-bottom: 30px;">📈 Video Statistics</h2>
-        <button onclick="showMainMenu()" style="position: absolute; top: 20px; right: 20px; padding: 8px 12px; background: #FF3B30; color: white; border: none; border-radius: 5px;">← Back</button>
-        <div id="statisticsContent"></div>
-    </div>
-    
-    <!-- Video Library -->
-    <div id="videoLibrary" class="hidden">
-        <input type="text" id="searchBox" placeholder="Search videos...">
-        <button onclick="closeLibrary()" style="position: absolute; top: 20px; right: 20px; padding: 8px 12px; background: #FF3B30; color: white; border: none; border-radius: 5px;">Close</button>
-        <div id="videoList"></div>
-    </div>
-    
-    <!-- Video Playback -->
-    <div id="playbackContainer" class="hidden">
-        <video id="playbackVideo" controls></video>
-        <div id="playbackControls">
-            <button onclick="playPause()">Play/Pause</button>
-            <select id="speedSelector" onchange="changeSpeed()">
-                <option value="0.1">0.1x</option>
-                <option value="0.25">0.25x</option>
-                <option value="0.5">0.5x</option>
-                <option value="1" selected>1x</option>
-                <option value="1.5">1.5x</option>
-                <option value="2">2x</option>
-                <option value="5">5x</option>
-                <option value="10">10x</option>
-            </select>
-            <button onclick="closePlayback()">Close</button>
-        </div>
+        <h2>📈 Video Statistics</h2>
+        <button onclick="showMainMenu()" class="backButton">← Back</button>
+        <div id="statisticsContent">No videos recorded yet</div>
     </div>
 
-    <script>
-        const video = document.getElementById('video');
-        const clock = document.getElementById('clock');
-        const startButton = document.getElementById('startButton');
-        const stopButton = document.getElementById('stopButton');
-        const libraryButton = document.getElementById('libraryButton');
-        
-        let startTime = null;
-        let clockInterval = null;
-        let mediaRecorder = null;
-        let recordedChunks = [];
-        let videoDatabase = [];
-        let videoDurations = []; // Track video lengths
-        
-        // Start camera when button is clicked
-        startButton.addEventListener('click', async () => {
-            try {
-                // Request camera access (rear camera preferred for recording)
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment', // Use rear camera
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    },
-                    audio: false
-                });
-        
-        // Show video library
-        libraryButton.addEventListener('click', () => {
-            document.getElementById('videoLibrary').classList.remove('hidden');
-            displayVideoList();
-        });
-        
-        // Search functionality
-        document.getElementById('searchBox').addEventListener('input', (e) => {
-            displayVideoList(e.target.value);
-        });
-        
-        function displayVideoList(searchTerm = '') {
-            const videoList = document.getElementById('videoList');
-            videoList.innerHTML = '';
-            
-            const filteredVideos = videoDatabase.filter(video => 
-                video.name.toLowerCase().includes(searchTerm.toLowerCase())
-            );
-            
-            if (filteredVideos.length === 0) {
-                videoList.innerHTML = '<p style="color: white;">No videos found</p>';
-                return;
-            }
-            
-            filteredVideos.forEach((video, index) => {
-                const videoItem = document.createElement('div');
-                videoItem.className = 'videoItem';
-                videoItem.innerHTML = `
-                    <h3>${video.name}</h3>
-                    <p>Recorded: ${new Date(video.date).toLocaleString()}</p>
-                    <p>Duration: ${formatDuration(video.duration)}</p>
-                `;
-                videoItem.onclick = () => playVideo(video);
-                videoList.appendChild(videoItem);
-            });
-        }
-        
-        function playVideo(videoData) {
-            const playbackVideo = document.getElementById('playbackVideo');
-            playbackVideo.src = videoData.url;
-            document.getElementById('playbackContainer').classList.remove('hidden');
-            document.getElementById('videoLibrary').classList.add('hidden');
-        }
-        
-        function closeLibrary() {
-            document.getElementById('videoLibrary').classList.add('hidden');
-        }
-        
-        function closePlayback() {
-            document.getElementById('playbackContainer').classList.add('hidden');
-            document.getElementById('playbackVideo').pause();
-        }
-        
-        function playPause() {
-            const playbackVideo = document.getElementById('playbackVideo');
-            if (playbackVideo.paused) {
-                playbackVideo.play();
-            } else {
-                playbackVideo.pause();
-            }
-        }
-        
-        function changeSpeed() {
-            const speedSelector = document.getElementById('speedSelector');
-            const playbackVideo = document.getElementById('playbackVideo');
-            playbackVideo.playbackRate = parseFloat(speedSelector.value);
-        }
-        
-        // Main menu functions
-        function showMainMenu() {
-            document.getElementById('mainMenu').classList.remove('hidden');
-            document.getElementById('videoContainer').classList.add('hidden');
-            document.getElementById('videoLibrary').classList.add('hidden');
-            document.getElementById('playbackContainer').classList.add('hidden');
-            document.getElementById('statisticsContainer').classList.add('hidden');
-        }
-        
-        function showAnalysis() {
-            document.getElementById('mainMenu').classList.add('hidden');
-            document.getElementById('videoLibrary').classList.remove('hidden');
-            displayVideoList();
-        }
-        
-        function showRecord() {
-            document.getElementById('mainMenu').classList.add('hidden');
-            document.getElementById('videoContainer').classList.remove('hidden');
-        }
-        
-        function showStatistics() {
-            document.getElementById('mainMenu').classList.add('hidden');
-            document.getElementById('statisticsContainer').classList.remove('hidden');
-            displayStatistics();
-        }
-        
-        function displayStatistics() {
-            const container = document.getElementById('statisticsContent');
-            
-            if (videoDurations.length === 0) {
-                container.innerHTML = '<div class="statItem">No videos recorded yet</div>';
-                return;
-            }
-            
-            const totalVideos = videoDurations.length;
-            const minDuration = Math.min(...videoDurations);
-            const maxDuration = Math.max(...videoDurations);
-            const avgDuration = videoDurations.reduce((a, b) => a + b, 0) / videoDurations.length;
-            
-            container.innerHTML = `
-                <div class="statItem">
-                    <div class="statLabel">Total Videos</div>
-                    <div class="statValue">${totalVideos}</div>
-                </div>
-                <div class="statItem">
-                    <div class="statLabel">Minimum Video Length</div>
-                    <div class="statValue">${formatDuration(minDuration)}</div>
-                </div>
-                <div class="statItem">
-                    <div class="statLabel">Maximum Video Length</div>
-                    <div class="statValue">${formatDuration(maxDuration)}</div>
-                </div>
-                <div class="statItem">
-                    <div class="statLabel">Average Video Length</div>
-                    <div class="statValue">${formatDuration(avgDuration)}</div>
-                </div>
-            `;
-        }
-        
-        function formatDuration(seconds) {
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
-        }
-        
-        // Stop recording when button is clicked
-        stopButton.addEventListener('click', () => {
-            if (mediaRecorder && mediaRecorder.state === 'recording') {
-                mediaRecorder.stop();
-                mediaRecorder.onstop = () => {
-                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
-                    
-                    // Prompt for video name
-                    const videoName = prompt('Enter video name:', `Game_${new Date().toLocaleDateString()}_${new Date().toLocaleTimeString()}`);
-                    if (videoName) {
-                        // Calculate duration
-                        const duration = (Date.now() - startTime) / 1000; // in seconds
-                        videoDurations.push(duration);
-                        
-                        // Store in memory
-                        const videoData = {
-                            name: videoName,
-                            blob: blob,
-                            date: new Date().toISOString(),
-                            url: URL.createObjectURL(blob),
-                            duration: duration
-                        };
-                        videoDatabase.push(videoData);
-                        
-                        // Also download
-                        const a = document.createElement('a');
-                        a.href = videoData.url;
-                        a.download = `${videoName}.webm`;
-                        a.click();
-                    }
-                    
-                    // Reset app
-                    stopButton.classList.add('hidden');
-                    libraryButton.classList.add('hidden');
-                    startButton.classList.remove('hidden');
-                    clock.classList.add('hidden');
-                    clearInterval(clockInterval);
-                    
-                    // Stop camera stream
-                    if (video.srcObject) {
-                        video.srcObject.getTracks().forEach(track => track.stop());
-                        video.srcObject = null;
-                    }
-                    
-                    recordedChunks = [];
-                };
-            }
-        });
-                
-                video.srcObject = stream;
-                startButton.classList.add('hidden');
-                stopButton.classList.remove('hidden');
-                libraryButton.classList.remove('hidden');
-                clock.classList.remove('hidden');
-                
-                // Start recording
-                mediaRecorder = new MediaRecorder(stream);
-                mediaRecorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) {
-                        recordedChunks.push(event.data);
-                    }
-                };
-                mediaRecorder.start();
-                
-                // Start the timer
-                startTime = Date.now();
-                clockInterval = setInterval(updateClock, 100);
-                
-            } catch (error) {
-                console.error('Error accessing camera:', error);
-                alert('Could not access camera. Please check permissions.');
-            }
-        });
-        
-        function updateClock() {
-            if (!startTime) return;
-            
-            const elapsed = Date.now() - startTime;
-            const totalSeconds = elapsed / 1000;
-            const hours = Math.floor(totalSeconds / 3600);
-            const minutes = Math.floor((totalSeconds % 3600) / 60);
-            const seconds = Math.floor(totalSeconds % 60);
-            const tenths = Math.floor((elapsed % 1000) / 100);
-            
-            const displayHours = hours.toString().padStart(2, '0');
-            const displayMinutes = minutes.toString().padStart(2, '0');
-            const displaySeconds = seconds.toString().padStart(2, '0');
-            
-            clock.textContent = `${displayHours}:${displayMinutes}:${displaySeconds}.${tenths}`;
-        }
-    </script>
+    <script src="script.js"></script>
 </body>
 </html>
