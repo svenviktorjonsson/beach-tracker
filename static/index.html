@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Beach volleyball — labeler</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/labeler-style.css?v=20260428-28" />
+</head>
+<body class="labeler-shell">
+  <main class="labeler-v2-shell">
+    <header class="labeler-tabbar">
+      <div class="labeler-tab-links labeler-tab-links-left">
+        <a href="/labeler" class="top-tab is-active">Labeler</a>
+        <a href="/train" class="top-tab">Trainer</a>
+        <div id="labelerSummary" class="labeler-summary"></div>
+      </div>
+    </header>
+
+    <header class="labeler-topbar">
+      <div class="labeler-panel-row">
+        <div class="labeler-panel-left">
+          <span id="wizardStepTitle" class="wizard-inline-title"></span>
+          <div class="labeler-question">
+            <div id="sessionQuestionButtons" class="btn-row-choice hidden"></div>
+            <div id="stepGeometryPanel" class="wizard-inline-panel hidden">
+              <div class="distortion-row distortion-row-inline">
+                <span id="distortionHint" class="distortion-label">Click 4 points along one bent line</span>
+              </div>
+            </div>
+            <div id="stepPeoplePanel" class="wizard-inline-panel hidden">
+              <div id="personRoleButtons" class="btn-row-choice"></div>
+            </div>
+            <div id="stepBallPanel" class="wizard-inline-panel hidden"></div>
+            <div id="stepIgnorePanel" class="wizard-inline-panel hidden"></div>
+            <button type="button" id="btnContinueStep" class="btn btn-lg btn-continue">Continue</button>
+          </div>
+        </div>
+        <div class="labeler-panel-spacer"></div>
+        <div class="labeler-actions-compact">
+          <button type="button" id="btnSkipStep" class="btn btn-lg">Skip step</button>
+          <button type="button" id="btnCompleteNext" class="btn btn-lg btn-continue">Save & next image</button>
+        </div>
+      </div>
+    </header>
+
+    <section id="canvasWrap" class="labeler-stage">
+      <canvas id="cv"></canvas>
+    </section>
+
+    <footer class="labeler-statusbar hidden">
+      <p id="instructionBanner" class="instruction-banner"></p>
+      <p id="status" class="status status-subtle" aria-live="polite"></p>
+    </footer>
+  </main>
+  <script src="/labeler-app.js?v=20260428-28"></script>
+</body>
+</html>

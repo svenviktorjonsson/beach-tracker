@@ -1,0 +1,7 @@
+# PyTorch training stack (install after base labeler deps if needed).
+# Pin torch/torchvision to your CUDA build from https://pytorch.org/ when using GPU.
+torch>=2.1.0
+torchvision>=0.16.0
+numpy>=1.24.0
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0

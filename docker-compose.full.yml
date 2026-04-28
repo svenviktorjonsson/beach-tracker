@@ -1,0 +1,14 @@
+# Same as docker-compose.yml but builds from Dockerfile.full (ffmpeg + Node + yt-dlp).
+# Requires apt during docker build (access to Debian mirrors). Use when you run
+# pull_youtube_* inside this container. For labeling PNGs only, use default docker-compose.yml.
+
+services:
+  labeler:
+    build:
+      context: .
+      dockerfile: Dockerfile.full
+    ports:
+      - "${LABELER_HOST_PORT:-8081}:8080"
+    volumes:
+      - ./data:/data
+      - ./static:/app/static

@@ -1,0 +1,32 @@
+# Full image: ffmpeg + Node for yt-dlp / pull_youtube_* inside Docker.
+# Build requires network access to Debian mirrors (apt-get). If that fails, use
+# the default Dockerfile (labeler only) and run pulls on the host or fix VPN/proxy.
+
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DATA_DIR=/data
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    nodejs \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -version \
+    && ffprobe -version \
+    && node --version
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --upgrade --no-cache-dir yt-dlp \
+    && yt-dlp --version
+
+COPY server.py agreement.py streams_youtube.py pull_youtube_frames.py pull_youtube_clips.py labeling_rules.py ./
+COPY static ./static
+
+EXPOSE 8080
+
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -131,7 +131,7 @@ try:
                         except Exception as e:
                             outfile.write(f"--- Error reading file: {e} ---\n")
                     outfile.write("\n\n") # Add separation between file contents
-        
+
     print("Successfully generated project content file.")
 
 except Exception as e:

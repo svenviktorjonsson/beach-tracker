@@ -1,0 +1,52 @@
+# Beach labeler — default image is Python-only (no apt/ffmpeg; builds without Debian mirror access).
+# For ffmpeg + Node + yt-dlp in the same image (YouTube pulls inside Docker), use docker-compose.full.yml.
+#
+# 1. Put streams_export.csv in ./data/ (name, youtube_url, …), then pre-download frames (recommended: Docker).
+#    If YouTube returns 429 / “Sign in to confirm you’re not a bot”:
+#      - Export Netscape cookies (logged-in browser) to e.g. ./data/youtube_cookies.txt
+#      - Pass:  .\run_pull_frames_docker.ps1 --csv /data/streams_export.csv --limit 1 --cookies /data/youtube_cookies.txt
+#      - Or:    docker compose run --rm -e YTDLP_COOKIES=/data/youtube_cookies.txt …
+#      (see https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp )
+#    Pulls default to slow, anti-block settings (yt-dlp pacing + --workers 1 + 10s between rows).
+#    Use cookies only when YouTube asks for login. For public videos, prefer no cookies:
+#      -e YTDLP_SKIP_COOKIES=1   or   pull_youtube_frames.py --no-cookies
+#    (With cookies, web-client n-challenge may need full EJS setup; without cookies, android works.)
+#    Then:
+#      docker compose build
+#      .\run_pull_frames_day_docker.ps1   ← new window; full CSV; yt-dlp+ffmpeg inside image; logs in data/pull_logs/
+#    One-off / test:
+#      .\run_pull_frames.ps1 --csv /data/streams_export.csv --limit 1 --no-cookies
+#    Do not run pull_youtube_frames.py on the host unless you install ffmpeg/ffprobe yourself.
+#    The labeler only reads PNGs already under ./data/images — it does not download from YouTube.
+# 2. Run:  docker compose up --build
+#    Or:   .\run_labeler.ps1   (starts detached + opens the browser)
+# 3. Open: http://localhost:<port>
+#    .\run_labeler.ps1 picks the first free host port in 8081-8099 and writes:
+#      - labeler-host-port.txt
+#      - .env with LABELER_HOST_PORT=... (Compose loads .env automatically — use this so 8081 being busy still works)
+#    Override:  $env:LABELER_HOST_PORT=8090; docker compose up -d
+#
+# Data persists in ./data (images, annotations, CSV).
+
+services:
+  labeler:
+    build: .
+    ports:
+      - "${LABELER_HOST_PORT:-8081}:8080"
+    volumes:
+      - ./data:/data
+      # UI changes apply without rebuild (override COPY static in image)
+      - ./static:/app/static
+      # Core labeler Python entrypoints apply without rebuild during iteration
+      - ./server.py:/app/server.py
+      - ./agreement.py:/app/agreement.py
+      - ./labeling_rules.py:/app/labeling_rules.py
+      - ./streams_youtube.py:/app/streams_youtube.py
+      # Training module live-mount so code changes apply without rebuild
+      - ./training:/app/training
+      # Cache pretrained model weights across container rebuilds
+      - torch-cache:/root/.cache/torch
+    # Default image has no ffmpeg/Node; use docker-compose.full.yml for pull tooling inside the container.
+
+volumes:
+  torch-cache:

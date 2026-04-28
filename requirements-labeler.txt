@@ -1,0 +1,6 @@
+# Minimal deps for the web labeler only (Docker default image — no apt/ffmpeg).
+# Full stack (yt-dlp pulls inside Docker): use Dockerfile.full + requirements.txt
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
+Pillow>=10.0.0
