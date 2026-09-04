@@ -69,6 +69,17 @@ def load_manifest(csv_dir: Path) -> list[dict[str, str]]:
     return rows
 
 
+def _manifest_distortion(row: dict[str, str] | None) -> dict[str, float]:
+    if not row:
+        return {"k1": 0.0, "k2": 0.0, "k3": 0.0, "rotation_deg": 0.0}
+    return {
+        "k1": float(row.get("distortion_k1") or 0.0),
+        "k2": float(row.get("distortion_k2") or 0.0),
+        "k3": float(row.get("distortion_k3") or 0.0),
+        "rotation_deg": float(row.get("rotation_deg") or 0.0),
+    }
+
+
 def build_ann_index(csv_dir: Path) -> dict[str, dict[str, Any]]:
     """
     Load all CSV tables under `csv_dir` and return stem -> annotation dict
@@ -86,6 +97,7 @@ def build_ann_index(csv_dir: Path) -> dict[str, dict[str, Any]]:
             stems.add(row["stem"])
 
     manifest = load_manifest(csv_dir)
+    manifest_index = {row["stem"]: row for row in manifest}
     for row in manifest:
         stems.add(row["stem"])
 
@@ -152,6 +164,7 @@ def build_ann_index(csv_dir: Path) -> dict[str, dict[str, Any]]:
             "court_polylines": court_by_stem.get(stem, []),
             "net_polylines": net_by_stem.get(stem, []),
             "exclusion_zones": excl_by_stem.get(stem, []),
+            "distortion_params": _manifest_distortion(manifest_index.get(stem)),
         }
     return index
 

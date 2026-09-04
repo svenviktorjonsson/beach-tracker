@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections import OrderedDict
 from pathlib import Path
@@ -49,7 +50,12 @@ def _clone_packed_sample(s: dict[str, Any]) -> dict[str, Any]:
         "court_mask": s["court_mask"].clone(),
         "net_pts": s["net_pts"].clone(),
         "net_mask": s["net_mask"].clone(),
+        "ball_center": s["ball_center"].clone(),
+        "ball_radius": s["ball_radius"].clone(),
+        "ball_size_labeled": s["ball_size_labeled"].clone(),
+        "ball_visible": s["ball_visible"].clone(),
         "orig_size": s["orig_size"].clone(),
+        "distortion_params": s["distortion_params"].clone(),
     }
 
 
@@ -160,14 +166,77 @@ def _extract_keypoints(
     max_court: int = MAX_COURT_PTS,
     max_net: int = MAX_NET_PTS,
 ) -> dict[str, torch.Tensor]:
-    """Extract court/net polyline vertices as normalised [0,1] coords + validity masks."""
+    """Extract court orthopoints and net anchor points as normalised [0,1] coords."""
+
+    def _fit_line_orthopoint(points: list[list[float]]) -> list[float] | None:
+        if len(points) < 2:
+            return None
+        n = float(len(points))
+        cx = sum(float(p[0]) for p in points) / n
+        cy = sum(float(p[1]) for p in points) / n
+        sxx = 0.0
+        sxy = 0.0
+        syy = 0.0
+        for px, py in points:
+            dx = float(px) - cx
+            dy = float(py) - cy
+            sxx += dx * dx
+            sxy += dx * dy
+            syy += dy * dy
+        theta = 0.5 * math.atan2(2.0 * sxy, sxx - syy)
+        dx = math.cos(theta)
+        dy = math.sin(theta)
+        nx = -dy
+        ny = dx
+        norm = math.hypot(nx, ny) or 1.0
+        nx /= norm
+        ny /= norm
+        rho = cx * nx + cy * ny
+        if rho < 0:
+            rho = -rho
+            nx = -nx
+            ny = -ny
+        ox = nx * rho
+        oy = ny * rho
+        return [ox / float(w), oy / float(h)]
+
+    def _extract_court_orthopoints() -> tuple[torch.Tensor, torch.Tensor]:
+        pts: list[list[float]] = []
+        for pl in ann.get("court_polylines") or []:
+            scope = (pl.get("scope") or "main").lower() if isinstance(pl, dict) else "main"
+            if scope != "main":
+                continue
+            raw_points = pl.get("points") if isinstance(pl, dict) else pl
+            if not isinstance(raw_points, list):
+                continue
+            line_points = [
+                [float(p[0]), float(p[1])]
+                for p in raw_points
+                if isinstance(p, (list, tuple)) and len(p) >= 2
+            ]
+            fit = _fit_line_orthopoint(line_points)
+            if fit is not None:
+                pts.append(fit)
+            if len(pts) >= max_court:
+                break
+        n = len(pts)
+        while len(pts) < max_court:
+            pts.append([0.0, 0.0])
+        coords = torch.tensor(pts[:max_court], dtype=torch.float32)
+        mask = torch.zeros(max_court, dtype=torch.bool)
+        mask[:n] = True
+        return coords, mask
 
     def _gather(polylines_key: str, max_pts: int) -> tuple[torch.Tensor, torch.Tensor]:
         pts: list[list[float]] = []
         for pl in ann.get(polylines_key) or []:
-            if (pl.get("scope") or "main").lower() != "main":
+            scope = (pl.get("scope") or "main").lower() if isinstance(pl, dict) else "main"
+            if scope != "main":
                 continue
-            for p in pl["points"]:
+            raw_points = pl.get("points") if isinstance(pl, dict) else pl
+            if not isinstance(raw_points, list):
+                continue
+            for p in raw_points:
                 pts.append([float(p[0]) / w, float(p[1]) / h])
                 if len(pts) >= max_pts:
                     break
@@ -181,13 +250,97 @@ def _extract_keypoints(
         mask[:n] = True
         return coords, mask
 
-    court_pts, court_mask = _gather("court_polylines", max_court)
+    court_pts, court_mask = _extract_court_orthopoints()
     net_pts, net_mask = _gather("net_polylines", max_net)
     return {
         "court_pts": court_pts,
         "court_mask": court_mask,
         "net_pts": net_pts,
         "net_mask": net_mask,
+    }
+
+
+def _extract_ball(
+    ann: dict[str, Any],
+    w: int,
+    h: int,
+) -> dict[str, torch.Tensor]:
+    """Extract active ball hint as normalised [0,1] targets.
+
+    Center is supervised from the label. Radius is only supervised when the
+    annotation carries an explicit size label rather than a center-only hint.
+    """
+    default = {
+        "center": torch.zeros(2, dtype=torch.float32),
+        "radius": torch.zeros(1, dtype=torch.float32),
+        "size_labeled": torch.tensor(False),
+        "visible": torch.tensor(False),
+    }
+
+    balls = ann.get("balls") or []
+    active = None
+    for b in balls:
+        scope = (b.get("scope") or "in_play").lower()
+        if scope == "in_play":
+            active = b
+            break
+    if active is None and balls:
+        # Fallback to the first available ball if no explicit in-play label exists.
+        active = balls[0]
+    if active is None:
+        return default
+
+    if "center_x" in active and "center_y" in active and "radius" in active:
+        cx = float(active["center_x"])
+        cy = float(active["center_y"])
+        radius = float(active["radius"])
+        ww = float(active.get("w", 2.0 * radius))
+        hh = float(active.get("h", 2.0 * radius))
+        size_labeled = ww > 3.0 and hh > 3.0 and radius > 1.5
+        visible = True
+    else:
+        if "w" in active and "x" in active:
+            x = float(active["x"])
+            y = float(active["y"])
+            ww = float(active["w"])
+            hh = float(active["h"])
+        else:
+            # Keep compatibility with ellipse exports.
+            cx = float(active["cx"])
+            cy = float(active["cy"])
+            if "rx" not in active and "r" in active:
+                r = float(active["r"])
+                rx = ry = r
+            else:
+                rx = float(active.get("rx", active.get("r", 1.0)))
+                ry = float(active.get("ry", active.get("r", 1.0)))
+            ww = 2.0 * rx
+            hh = 2.0 * ry
+            x = cx - 0.5 * ww
+            y = cy - 0.5 * hh
+            visible = True
+        size_labeled = ww > 3.0 and hh > 3.0
+        cx = x + 0.5 * ww
+        cy = y + 0.5 * hh
+        radius = 0.5 * (ww + hh) / 2.0
+        visible = ww > 0 and hh > 0
+
+    cx = max(0.0, min(float(w), cx))
+    cy = max(0.0, min(float(h), cy))
+    radius = max(0.0, float(radius))
+
+    # Normalised for  [0,1] in resized square pipeline.
+    center = torch.tensor(
+        [cx / float(w), cy / float(h)], dtype=torch.float32
+    )
+    ww_px = float(active.get("w", 2.0 * radius))
+    hh_px = float(active.get("h", 2.0 * radius))
+    radius_n = torch.tensor([0.25 * (ww_px / float(w) + hh_px / float(h))], dtype=torch.float32)
+    return {
+        "center": center,
+        "radius": radius_n,
+        "size_labeled": torch.tensor(bool(size_labeled)),
+        "visible": torch.tensor(bool(visible)),
     }
 
 
@@ -202,6 +355,7 @@ def pack_training_sample(
     w, h = image.size
     boxes, labels = _boxes_and_labels_from_ann(ann, w, h)
     kp = _extract_keypoints(ann, w, h)
+    ball = _extract_ball(ann, w, h)
 
     tw = th = image_size
     image_r = image.resize((tw, th), Image.BILINEAR)
@@ -216,6 +370,16 @@ def pack_training_sample(
         boxes[:, 3] *= sy
 
     img_t = torch.from_numpy(np.array(image_r)).permute(2, 0, 1).float() / 255.0
+    dist = ann.get("distortion_params") or {}
+    distortion_params = torch.tensor(
+        [
+            float(dist.get("k1", ann.get("distortion_k", 0.0) or 0.0)),
+            float(dist.get("k2", 0.0)),
+            float(dist.get("k3", 0.0)),
+            float(dist.get("rotation_deg", 0.0)),
+        ],
+        dtype=torch.float32,
+    )
 
     return {
         "stem": stem,
@@ -226,7 +390,12 @@ def pack_training_sample(
         "court_mask": kp["court_mask"],
         "net_pts": kp["net_pts"],
         "net_mask": kp["net_mask"],
+        "ball_center": ball["center"],
+        "ball_radius": ball["radius"],
+        "ball_size_labeled": ball["size_labeled"],
+        "ball_visible": ball["visible"],
         "orig_size": torch.tensor([h, w]),
+        "distortion_params": distortion_params,
     }
 
 
@@ -366,6 +535,7 @@ class BeachCSVDataset(Dataset):
                 "court_polylines": [],
                 "net_polylines": [],
                 "exclusion_zones": [],
+                "distortion_params": {"k1": 0.0, "k2": 0.0, "k3": 0.0, "rotation_deg": 0.0},
             }
 
         row = self._manifest.get(stem)

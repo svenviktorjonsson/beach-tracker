@@ -46,6 +46,47 @@ def _rel_image_path(filename: str) -> str:
     return f"images/{Path(filename).name}"
 
 
+def _distortion_fields(ann: dict) -> dict[str, str]:
+    params = ann.get("distortion_params") or {}
+    k1 = float(params.get("k1", ann.get("distortion_k", 0.0) or 0.0))
+    k2 = float(params.get("k2", 0.0))
+    k3 = float(params.get("k3", 0.0))
+    rotation_deg = float(params.get("rotation_deg", 0.0))
+    return {
+        "distortion_k1": str(k1),
+        "distortion_k2": str(k2),
+        "distortion_k3": str(k3),
+        "rotation_deg": str(rotation_deg),
+    }
+
+
+def _camera_fields(ann: dict) -> dict[str, str]:
+    model = ann.get("camera_model") or {}
+    intrinsics = model.get("intrinsics") or {}
+    distortion = model.get("distortion") or {}
+    pose = model.get("pose") or {}
+    return {
+        "camera_model_version": str(model.get("version", "")),
+        "camera_estimate_status": str(model.get("estimate_status", "")),
+        "camera_confidence": str(float(model.get("confidence", 0.0) or 0.0)),
+        "camera_fx": str(float(intrinsics.get("fx", 0.0) or 0.0)),
+        "camera_fy": str(float(intrinsics.get("fy", 0.0) or 0.0)),
+        "camera_cx": str(float(intrinsics.get("cx", 0.0) or 0.0)),
+        "camera_cy": str(float(intrinsics.get("cy", 0.0) or 0.0)),
+        "camera_k1": str(float(distortion.get("k1", 0.0) or 0.0)),
+        "camera_k2": str(float(distortion.get("k2", 0.0) or 0.0)),
+        "camera_k3": str(float(distortion.get("k3", 0.0) or 0.0)),
+        "camera_p1": str(float(distortion.get("p1", 0.0) or 0.0)),
+        "camera_p2": str(float(distortion.get("p2", 0.0) or 0.0)),
+        "camera_yaw_deg": str(float(pose.get("yaw_deg", 0.0) or 0.0)),
+        "camera_pitch_deg": str(float(pose.get("pitch_deg", 0.0) or 0.0)),
+        "camera_roll_deg": str(float(pose.get("roll_deg", 0.0) or 0.0)),
+        "camera_tx_m": str(float(pose.get("tx_m", 0.0) or 0.0)),
+        "camera_ty_m": str(float(pose.get("ty_m", 0.0) or 0.0)),
+        "camera_tz_m": str(float(pose.get("tz_m", 0.0) or 0.0)),
+    }
+
+
 def export_json_to_csv(data_root: Path, out_dir: Path) -> None:
     data_root = data_root.resolve()
     out_dir = out_dir.resolve()
@@ -115,6 +156,8 @@ def export_json_to_csv(data_root: Path, out_dir: Path) -> None:
                     "image_width": str(iw),
                     "image_height": str(ih),
                     "annotation_source": src,
+                    **_distortion_fields(ann),
+                    **_camera_fields(ann),
                 }
             )
 

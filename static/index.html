@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Beach volleyball — labeler</title>
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="/labeler-style.css?v=20260428-28" />
+  <link rel="stylesheet" href="/labeler-style.css?v=20260605-01" />
 </head>
 <body class="labeler-shell">
   <main class="labeler-v2-shell">
@@ -25,7 +25,7 @@
             <div id="sessionQuestionButtons" class="btn-row-choice hidden"></div>
             <div id="stepGeometryPanel" class="wizard-inline-panel hidden">
               <div class="distortion-row distortion-row-inline">
-                <span id="distortionHint" class="distortion-label">Click 4 points along one bent line</span>
+                <span id="distortionHint" class="distortion-label">Click 4 points along a bent line that is perfectly horizontal in reality</span>
               </div>
             </div>
             <div id="stepPeoplePanel" class="wizard-inline-panel hidden">
@@ -46,6 +46,12 @@
 
     <section id="canvasWrap" class="labeler-stage">
       <canvas id="cv"></canvas>
+      <div id="focusOverlay" class="focus-overlay hidden" aria-hidden="true">
+        <div class="focus-marker"></div>
+        <div class="focus-marker"></div>
+        <div class="focus-marker"></div>
+        <div class="focus-marker"></div>
+      </div>
     </section>
 
     <footer class="labeler-statusbar hidden">
@@ -53,6 +59,6 @@
       <p id="status" class="status status-subtle" aria-live="polite"></p>
     </footer>
   </main>
-  <script src="/labeler-app.js?v=20260428-28"></script>
+  <script src="/labeler-app.js?v=20260721-03"></script>
 </body>
 </html>

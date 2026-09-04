@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ball and Line Refinement Replay</title>
+  <style>
+    :root {
+      --bg: #0a1020;
+      --panel: #11192b;
+      --text: #edf2ff;
+      --muted: #9fb0d3;
+      --line: #22304a;
+      --accent: #74b9ff;
+      --tab: #18233b;
+      --tab-active: #243657;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #14203b 0%, var(--bg) 55%);
+      color: var(--text);
+      font: 14px/1.45 Segoe UI, Arial, sans-serif;
+    }
+    .wrap {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 22px;
+    }
+    h1, p { margin: 0; }
+    h1 { font-size: 28px; margin-bottom: 8px; }
+    .lead { color: var(--muted); margin-bottom: 18px; max-width: 980px; }
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .tab-btn {
+      border: 1px solid var(--line);
+      background: var(--tab);
+      color: var(--text);
+      padding: 10px 16px;
+      border-radius: 999px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .tab-btn.active {
+      background: var(--tab-active);
+      border-color: var(--accent);
+    }
+    .demo-panel { display: none; }
+    .demo-panel.active { display: block; }
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .card {
+      background: rgba(17, 25, 43, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px 16px;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+    }
+    .panel-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .panel-sub {
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .value { font-size: 22px; font-weight: 700; }
+    .controls {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .slider-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+    .side-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .small {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    code {
+      color: #d7e3ff;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    canvas {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #0a1020;
+      display: block;
+      image-rendering: pixelated;
+    }
+    #ballCanvas {
+      max-width: 520px;
+      aspect-ratio: 1;
+    }
+    #lineCanvas {
+      max-width: 760px;
+      aspect-ratio: 25 / 9;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Ball and Line Refinement Replay</h1>
+    <p class="lead">
+      One-image deterministic refinement demo on the labeled frame
+      <code>Korall_2025-11-17_ytKDNaAwGuXOo_r0788_f2_3380.10s.png</code>.
+    </p>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="ball">Ball</button>
+      <button class="tab-btn" data-tab="line">Line</button>
+    </div>
+
+    <section class="demo-panel active" data-panel="ball">
+      <div class="grid">
+        <div class="card">
+          <div class="panel-title">Ball Crop Replay</div>
+          <div class="panel-sub">One circle and one center dot. The search stays anchored to the clicked hint.</div>
+          <canvas id="ballCanvas" width="520" height="520"></canvas>
+          <div class="controls">
+            <div class="slider-row">
+              <input id="ballSlider" type="range" min="0" max="0" step="1" value="0" />
+              <strong id="ballSliderTime">0.00 ms</strong>
+            </div>
+            <div class="small">Show time up to: <span id="ballStepLabel">0.00 ms</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="panel-title">Ball Data</div>
+          <div class="side-grid">
+            <div><div class="label">Time</div><div class="value" id="ballTimeValue">-</div></div>
+            <div><div class="label">Score</div><div class="value" id="ballScoreValue">-</div></div>
+            <div><div class="label">Center</div><div class="value" id="ballCenterValue">-</div></div>
+            <div><div class="label">Radius</div><div class="value" id="ballRadiusValue">-</div></div>
+            <div><div class="label">Center Shift</div><div class="value" id="ballCenterShiftValue">-</div></div>
+            <div><div class="label">Radius Shift</div><div class="value" id="ballRadiusShiftValue">-</div></div>
+            <div><div class="label">0.5px / 0.5px Hit</div><div class="value" id="ballThresholdTimeValue">-</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="demo-panel" data-panel="line">
+      <div class="grid">
+        <div class="card">
+          <div class="panel-title">Line Crop Replay</div>
+          <div class="panel-sub">Shows the initial three-segment court polyline, its orthopoints, and the full polyline updating together during the solver.</div>
+          <canvas id="lineCanvas" width="760" height="274"></canvas>
+          <div class="controls">
+            <div class="slider-row">
+              <input id="lineSlider" type="range" min="0" max="0" step="1" value="0" />
+              <strong id="lineSliderTime">0.00 ms</strong>
+            </div>
+            <div class="small">Show time up to: <span id="lineStepLabel">0.00 ms</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="panel-title">Line Data</div>
+          <div class="side-grid">
+            <div><div class="label">Time</div><div class="value" id="lineTimeValue">-</div></div>
+            <div><div class="label">Score</div><div class="value" id="lineScoreValue">-</div></div>
+            <div><div class="label">Point 1</div><div class="value" id="lineP1Value">-</div></div>
+            <div><div class="label">Point 4</div><div class="value" id="lineP2Value">-</div></div>
+            <div><div class="label">Mean Shift</div><div class="value" id="lineShiftValue">-</div></div>
+            <div><div class="label">Segment Error</div><div class="value" id="lineSlopeValue">-</div></div>
+            <div><div class="label">1px / 1px Hit</div><div class="value" id="lineThresholdTimeValue">-</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="./ball-refine-demo-data.js"></script>
+  <script>
+    const ballDemo = {
+      hint: { cx: 312.8384056821377, cy: 137.5550033610884 },
+      crop: { x: 281, y: 106, size: 64 },
+      initialRadius: 4.5,
+    };
+
+    const lineDemo = {
+      crop: { x: 90, y: 160, width: 500, height: 180 },
+      rotationDeg: -2.8653209585221955,
+      points: [
+        { x: 120.02463345251361 - 90, y: 297.7820282191683 - 160 },
+        { x: 254.43981500211714 - 90, y: 190.79935876378704 - 160 },
+        { x: 434.78083972814824 - 90, y: 200.24109616312236 - 160 },
+        { x: 564.0158587188023 - 90, y: 320.8961193938319 - 160 },
+      ],
+    };
+    lineDemo.p1 = lineDemo.points[1];
+    lineDemo.p2 = lineDemo.points[2];
+
+    const ballState = {
+      cropData: null, luma: null, yellow: null, gx: null, gy: null,
+      hintLocal: null, anchoredSeed: null, blobMask: null, blobPixels: [],
+      path: [], final: null, currentIndex: 0,
+    };
+
+    const lineState = {
+      cropData: null, blue: null, luma: null,
+      path: [], final: null, currentIndex: 0,
+    };
+
+    const ballCanvas = document.getElementById("ballCanvas");
+    const ballCtx = ballCanvas.getContext("2d");
+    const ballSlider = document.getElementById("ballSlider");
+    const lineCanvas = document.getElementById("lineCanvas");
+    const lineCtx = lineCanvas.getContext("2d");
+    const lineSlider = document.getElementById("lineSlider");
+
+    bindTabs();
+    initBall();
+    initLine();
+
+    function bindTabs() {
+      const buttons = Array.from(document.querySelectorAll(".tab-btn"));
+      const panels = Array.from(document.querySelectorAll(".demo-panel"));
+      for (const button of buttons) {
+        button.addEventListener("click", () => {
+          const target = button.dataset.tab;
+          for (const b of buttons) b.classList.toggle("active", b === button);
+          for (const panel of panels) panel.classList.toggle("active", panel.dataset.panel === target);
+        });
+      }
+    }
+
+    function setText(id, value) {
+      document.getElementById(id).textContent = value;
+    }
+
+    function makeImageData(blob) {
+      return new ImageData(blob.pixels, blob.width, blob.height);
+    }
+
+    function drawScaledImage(ctx, imageData, width, height) {
+      const off = document.createElement("canvas");
+      off.width = imageData.width;
+      off.height = imageData.height;
+      off.getContext("2d").putImageData(imageData, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(off, 0, 0, width, height);
+    }
+
+    function drawScaledImageCentered(ctx, imageData, width, height) {
+      const off = document.createElement("canvas");
+      off.width = imageData.width;
+      off.height = imageData.height;
+      off.getContext("2d").putImageData(imageData, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(off, -width / 2, -height / 2, width, height);
+    }
+
+    function initBall() {
+      if (!window.BALL_REFINE_DEMO_CROP) {
+        setText("ballTimeValue", "crop data missing");
+        return;
+      }
+      ballState.cropData = makeImageData(window.BALL_REFINE_DEMO_CROP);
+      const w = ballDemo.crop.size;
+      const h = ballDemo.crop.size;
+      const src = ballState.cropData.data;
+      ballState.luma = new Float32Array(w * h);
+      ballState.yellow = new Float32Array(w * h);
+      ballState.gx = new Float32Array(w * h);
+      ballState.gy = new Float32Array(w * h);
+      ballState.hintLocal = {
+        cx: ballDemo.hint.cx - ballDemo.crop.x,
+        cy: ballDemo.hint.cy - ballDemo.crop.y,
+      };
+      for (let i = 0; i < w * h; i += 1) {
+        const r = src[i * 4];
+        const g = src[i * 4 + 1];
+        const b = src[i * 4 + 2];
+        ballState.luma[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+        ballState.yellow[i] = r + g - 1.2 * b;
+      }
+      for (let y = 1; y < h - 1; y += 1) {
+        for (let x = 1; x < w - 1; x += 1) {
+          const idx = y * w + x;
+          ballState.gx[idx] = (ballState.luma[idx + 1] - ballState.luma[idx - 1]) * 0.5;
+          ballState.gy[idx] = (ballState.luma[idx + w] - ballState.luma[idx - w]) * 0.5;
+        }
+      }
+      ballState.anchoredSeed = estimateBallSeed();
+      runBallOptimization();
+      ballSlider.max = String(Math.max(0, ballState.path.length - 1));
+      ballSlider.value = String(Math.max(0, ballState.path.length - 1));
+      ballState.currentIndex = Number(ballSlider.value);
+      ballSlider.addEventListener("input", () => {
+        ballState.currentIndex = Number(ballSlider.value);
+        drawBall();
+      });
+      drawBall();
+    }
+
+    function estimateBallSeed() {
+      const w = ballDemo.crop.size;
+      const h = ballDemo.crop.size;
+      const { cx: hx, cy: hy } = ballState.hintLocal;
+      const threshold = 310;
+      const mask = new Uint8Array(w * h);
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const idx = y * w + x;
+          if (ballState.yellow[idx] > threshold) mask[idx] = 1;
+        }
+      }
+      const seeds = [];
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          const x = Math.round(hx + dx);
+          const y = Math.round(hy + dy);
+          if (x < 0 || y < 0 || x >= w || y >= h) continue;
+          const idx = y * w + x;
+          if (mask[idx]) seeds.push({ x, y, d2: dx * dx + dy * dy });
+        }
+      }
+      seeds.sort((a, b) => a.d2 - b.d2);
+      if (!seeds.length) {
+        ballState.blobMask = mask;
+        ballState.blobPixels = [];
+        return { cx: hx, cy: hy + 1.0, r: 2.7 };
+      }
+      const visited = new Uint8Array(w * h);
+      const queue = [seeds[0]];
+      const blob = [];
+      visited[seeds[0].y * w + seeds[0].x] = 1;
+      while (queue.length) {
+        const node = queue.pop();
+        blob.push(node);
+        for (let oy = -1; oy <= 1; oy += 1) {
+          for (let ox = -1; ox <= 1; ox += 1) {
+            if (!ox && !oy) continue;
+            const nx = node.x + ox;
+            const ny = node.y + oy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const nidx = ny * w + nx;
+            if (!mask[nidx] || visited[nidx]) continue;
+            visited[nidx] = 1;
+            queue.push({ x: nx, y: ny });
+          }
+        }
+      }
+      let sumW = 0;
+      let sumX = 0;
+      let sumY = 0;
+      for (const { x, y } of blob) {
+        const idx = y * w + x;
+        const yellow = Math.max(0, ballState.yellow[idx] - threshold);
+        const dx = x - hx;
+        const dy = y - hy;
+        const spatial = Math.exp(-(dx * dx + dy * dy) / (2 * 1.8 * 1.8));
+        const belowBoost = y >= hy ? 1.25 : 0.85;
+        const weight = Math.max(1, yellow) * spatial * belowBoost;
+        sumW += weight;
+        sumX += weight * x;
+        sumY += weight * y;
+      }
+      ballState.blobMask = visited;
+      ballState.blobPixels = blob;
+      if (sumW <= 1e-6 || !blob.length) return { cx: hx, cy: hy + 1.0, r: 2.7 };
+      const areaRadius = Math.sqrt(blob.length / Math.PI);
+      return {
+        cx: sumX / sumW,
+        cy: sumY / sumW,
+        r: Math.max(2.2, Math.min(4.0, areaRadius * 1.15)),
+      };
+    }
+
+    function scoreBall(cx, cy, r) {
+      const w = ballDemo.crop.size;
+      const h = ballDemo.crop.size;
+      const { cx: hx, cy: hy } = ballState.hintLocal;
+      let blobHit = 0;
+      let blobMiss = 0;
+      let insideSupport = 0;
+      let asymPenalty = 0;
+      let count = 0;
+      const rr = r * r;
+      const bandIn = Math.max(0, (r - 1.1) * (r - 1.1));
+      const bandOut = (r + 1.1) * (r + 1.1);
+      for (let y = Math.max(1, Math.floor(cy - r - 2)); y <= Math.min(h - 2, Math.ceil(cy + r + 2)); y += 1) {
+        for (let x = Math.max(1, Math.floor(cx - r - 2)); x <= Math.min(w - 2, Math.ceil(cx + r + 2)); x += 1) {
+          const dx = x - cx;
+          const dy = y - cy;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > bandOut) continue;
+          const idx = y * w + x;
+          const yellow = ballState.yellow[idx];
+          const blob = ballState.blobMask[idx] ? 1 : 0;
+          if (d2 <= rr) {
+            insideSupport += yellow;
+            blobHit += blob;
+          } else if (d2 >= bandIn) {
+            blobMiss += blob;
+          }
+          const sx = Math.round(cx - dx);
+          const sy = Math.round(cy - dy);
+          if (sx >= 1 && sy >= 1 && sx < w - 1 && sy < h - 1 && d2 <= rr) {
+            const sidx = sy * w + sx;
+            asymPenalty += Math.abs(yellow - ballState.yellow[sidx]);
+            count += 1;
+          }
+        }
+      }
+      if (!count) return -1e9;
+      const hintPenalty = Math.hypot(cx - hx, cy - hy);
+      const downPenalty = Math.max(0, hy - cy) * 4.0;
+      const areaTarget = ballState.blobPixels.length ? Math.sqrt(ballState.blobPixels.length / Math.PI) * 1.15 : 2.7;
+      return insideSupport * 0.0025 + blobHit * 9.0 - blobMiss * 5.0 - (asymPenalty / count) * 0.18 - Math.abs(r - areaTarget) * 4.0 - hintPenalty * 11.0 - downPenalty;
+    }
+
+    function runBallOptimization() {
+      const start = { ...ballState.anchoredSeed };
+      let current = { ...start, score: scoreBall(start.cx, start.cy, start.r), elapsedMs: 0 };
+      const path = [{ ...current }];
+      const t0 = performance.now();
+      const centerSteps = [0.75, 0.4, 0.2];
+      const radiusSteps = [0.5, 0.25, 0.15];
+      for (let level = 0; level < centerSteps.length; level += 1) {
+        const cStep = centerSteps[level];
+        const rStep = radiusSteps[level];
+        let improved = true;
+        while (improved) {
+          improved = false;
+          let best = current;
+          for (const dx of [-cStep, 0, cStep]) {
+            for (const dy of [-cStep, 0, cStep]) {
+              for (const dr of [-rStep, 0, rStep]) {
+                if (!dx && !dy && !dr) continue;
+                const cand = {
+                  cx: Math.max(ballState.hintLocal.cx - 2.5, Math.min(ballState.hintLocal.cx + 2.5, current.cx + dx)),
+                  cy: Math.max(ballState.hintLocal.cy - 2.5, Math.min(ballState.hintLocal.cy + 2.5, current.cy + dy)),
+                  r: Math.max(1.6, Math.min(4.2, current.r + dr)),
+                };
+                const score = scoreBall(cand.cx, cand.cy, cand.r);
+                if (score > best.score + 1e-6) best = { ...cand, score, elapsedMs: performance.now() - t0 };
+              }
+            }
+          }
+          if (best !== current) {
+            current = best;
+            path.push({ ...current });
+            improved = true;
+          }
+        }
+      }
+      ballState.final = { ...current };
+      const initial = path[0];
+      ballState.path = path.map((p) => ({
+        ...p,
+        centerShift: Math.hypot(p.cx - initial.cx, p.cy - initial.cy),
+        radiusShift: Math.abs(p.r - initial.r),
+      }));
+      const hit = ballState.path.find((p) => Math.abs(p.cx - ballState.final.cx) <= 0.5 && Math.abs(p.cy - ballState.final.cy) <= 0.5 && Math.abs(p.r - ballState.final.r) <= 0.5);
+      setText("ballThresholdTimeValue", hit ? `${hit.elapsedMs.toFixed(2)} ms` : "not hit");
+    }
+
+    function drawBall() {
+      const current = ballState.path[ballState.currentIndex];
+      const scale = ballCanvas.width / ballDemo.crop.size;
+      ballCtx.clearRect(0, 0, ballCanvas.width, ballCanvas.height);
+      drawScaledImage(ballCtx, ballState.cropData, ballCanvas.width, ballCanvas.height);
+      const x = current.cx * scale;
+      const y = current.cy * scale;
+      ballCtx.strokeStyle = "rgba(0, 0, 0, 0.40)";
+      ballCtx.lineWidth = Math.max(1, ballDemo.initialRadius * scale * 0.08);
+      ballCtx.beginPath();
+      ballCtx.arc(x, y, current.r * scale, 0, Math.PI * 2);
+      ballCtx.stroke();
+      ballCtx.fillStyle = "rgba(0, 0, 0, 0.75)";
+      ballCtx.beginPath();
+      ballCtx.arc(x, y, Math.max(2, scale * 0.45), 0, Math.PI * 2);
+      ballCtx.fill();
+      setText("ballSliderTime", `${current.elapsedMs.toFixed(2)} ms`);
+      setText("ballStepLabel", `${current.elapsedMs.toFixed(2)} ms`);
+      setText("ballTimeValue", `${current.elapsedMs.toFixed(2)} ms`);
+      setText("ballScoreValue", current.score.toFixed(1));
+      setText("ballCenterValue", `${(ballDemo.crop.x + current.cx).toFixed(2)}, ${(ballDemo.crop.y + current.cy).toFixed(2)}`);
+      setText("ballRadiusValue", `${current.r.toFixed(2)} px`);
+      setText("ballCenterShiftValue", `${current.centerShift.toFixed(3)} px`);
+      setText("ballRadiusShiftValue", `${current.radiusShift.toFixed(3)} px`);
+    }
+
+    function initLine() {
+      if (!window.LINE_REFINE_DEMO_CROP) {
+        setText("lineTimeValue", "crop data missing");
+        return;
+      }
+      lineState.cropData = makeImageData(window.LINE_REFINE_DEMO_CROP);
+      const w = lineDemo.crop.width;
+      const h = lineDemo.crop.height;
+      const src = lineState.cropData.data;
+      lineState.blue = new Float32Array(w * h);
+      lineState.luma = new Float32Array(w * h);
+      for (let i = 0; i < w * h; i += 1) {
+        const r = src[i * 4];
+        const g = src[i * 4 + 1];
+        const b = src[i * 4 + 2];
+        lineState.blue[i] = 1.3 * b - 0.8 * r - 0.35 * g;
+        lineState.luma[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+      }
+      runLineOptimization();
+      lineSlider.max = String(Math.max(0, lineState.path.length - 1));
+      lineSlider.value = String(Math.max(0, lineState.path.length - 1));
+      lineState.currentIndex = Number(lineSlider.value);
+      lineSlider.addEventListener("input", () => {
+        lineState.currentIndex = Number(lineSlider.value);
+        drawLine();
+      });
+      drawLine();
+    }
+
+    function scoreLineSegment(p1, p2) {
+      const w = lineDemo.crop.width;
+      const h = lineDemo.crop.height;
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1) return -1e9;
+      const nx = -dy / len;
+      const ny = dx / len;
+      let lineSupport = 0;
+      let contrast = 0;
+      let valid = 0;
+      for (let i = 0; i <= 64; i += 1) {
+        const t = i / 64;
+        const x = p1.x + dx * t;
+        const y = p1.y + dy * t;
+        const cx = Math.round(x);
+        const cy = Math.round(y);
+        const in1x = Math.round(x + nx * 1.0);
+        const in1y = Math.round(y + ny * 1.0);
+        const in2x = Math.round(x - nx * 1.0);
+        const in2y = Math.round(y - ny * 1.0);
+        const out1x = Math.round(x + nx * 4.0);
+        const out1y = Math.round(y + ny * 4.0);
+        const out2x = Math.round(x - nx * 4.0);
+        const out2y = Math.round(y - ny * 4.0);
+        if (
+          cx < 2 || cy < 2 || cx >= w - 2 || cy >= h - 2 ||
+          in1x < 2 || in1y < 2 || in1x >= w - 2 || in1y >= h - 2 ||
+          in2x < 2 || in2y < 2 || in2x >= w - 2 || in2y >= h - 2 ||
+          out1x < 2 || out1y < 2 || out1x >= w - 2 || out1y >= h - 2 ||
+          out2x < 2 || out2y < 2 || out2x >= w - 2 || out2y >= h - 2
+        ) continue;
+        valid += 1;
+        const idx = cy * w + cx;
+        const in1 = in1y * w + in1x;
+        const in2 = in2y * w + in2x;
+        const out1 = out1y * w + out1x;
+        const out2 = out2y * w + out2x;
+        const centerBlue = lineState.blue[idx];
+        const innerBlue = (lineState.blue[in1] + lineState.blue[in2]) * 0.5;
+        const outerBlue = (lineState.blue[out1] + lineState.blue[out2]) * 0.5;
+        const innerLuma = (lineState.luma[in1] + lineState.luma[in2]) * 0.5;
+        const outerLuma = (lineState.luma[out1] + lineState.luma[out2]) * 0.5;
+        lineSupport += centerBlue * 1.2 + innerBlue * 0.8 - outerBlue * 0.8;
+        contrast += Math.abs(innerLuma - outerLuma) * 0.5 + Math.abs(centerBlue - outerBlue) * 0.6;
+      }
+      if (!valid) return -1e9;
+      return lineSupport / valid + contrast / valid;
+    }
+
+    function scorePolyline(points) {
+      let total = 0;
+      let anchorPenalty = 0;
+      let segmentError = 0;
+      for (let i = 0; i < points.length - 1; i += 1) {
+        total += scoreLineSegment(points[i], points[i + 1]);
+      }
+      for (let i = 0; i < points.length; i += 1) {
+        anchorPenalty += Math.hypot(points[i].x - lineDemo.points[i].x, points[i].y - lineDemo.points[i].y) * 9.0;
+      }
+      for (let i = 1; i < points.length - 1; i += 1) {
+        const vx1 = points[i].x - points[i - 1].x;
+        const vy1 = points[i].y - points[i - 1].y;
+        const vx2 = points[i + 1].x - points[i].x;
+        const vy2 = points[i + 1].y - points[i].y;
+        const denom = Math.max(1, Math.hypot(vx1, vy1) * Math.hypot(vx2, vy2));
+        segmentError += Math.abs(vx1 * vy2 - vy1 * vx2) / denom;
+      }
+      return { score: total - anchorPenalty - segmentError * 8.0, segmentError };
+    }
+
+    function runLineOptimization() {
+      const startPoints = lineDemo.points.map((p) => ({ x: p.x, y: p.y }));
+      let scoredStart = scorePolyline(startPoints);
+      let current = {
+        points: startPoints,
+        score: scoredStart.score,
+        segmentError: scoredStart.segmentError,
+        elapsedMs: 0,
+      };
+      const path = [{ ...current, points: current.points.map((p) => ({ ...p })) }];
+      const t0 = performance.now();
+      const steps = [1.0, 0.5, 0.2, 0.1];
+      for (const step of steps) {
+        let improved = true;
+        while (improved) {
+          improved = false;
+          let best = current;
+          for (let idx = 0; idx < current.points.length; idx += 1) {
+            for (const dx of [-step, 0, step]) {
+              for (const dy of [-step, 0, step]) {
+                if (!dx && !dy) continue;
+                const candPoints = current.points.map((p) => ({ ...p }));
+                candPoints[idx] = {
+                  x: Math.max(lineDemo.points[idx].x - 3, Math.min(lineDemo.points[idx].x + 3, candPoints[idx].x + dx)),
+                  y: Math.max(lineDemo.points[idx].y - 3, Math.min(lineDemo.points[idx].y + 3, candPoints[idx].y + dy)),
+                };
+                const scored = scorePolyline(candPoints);
+                if (scored.score > best.score + 1e-6) {
+                  best = {
+                    points: candPoints,
+                    score: scored.score,
+                    segmentError: scored.segmentError,
+                    elapsedMs: performance.now() - t0,
+                  };
+                }
+              }
+            }
+          }
+          if (best !== current) {
+            current = best;
+            path.push({ ...current, points: current.points.map((p) => ({ ...p })) });
+            improved = true;
+          }
+        }
+      }
+      lineState.final = { ...current };
+      lineState.path = path.map((p) => {
+        let shift = 0;
+        for (let i = 0; i < p.points.length; i += 1) {
+          shift += Math.hypot(p.points[i].x - startPoints[i].x, p.points[i].y - startPoints[i].y);
+        }
+        return { ...p, meanShift: shift / p.points.length };
+      });
+      const hit = lineState.path.find((p) =>
+        p.points.every((pt, i) => Math.hypot(pt.x - lineState.final.points[i].x, pt.y - lineState.final.points[i].y) <= 1.0)
+      );
+      setText("lineThresholdTimeValue", hit ? `${hit.elapsedMs.toFixed(2)} ms` : "not hit");
+    }
+
+    function drawLine() {
+      const current = lineState.path[lineState.currentIndex];
+      const scaleX = lineCanvas.width / lineDemo.crop.width;
+      const scaleY = lineCanvas.height / lineDemo.crop.height;
+      const rotationRad = (lineDemo.rotationDeg * Math.PI) / 180;
+      const project = (point) => ({
+        x: point.x * scaleX - lineCanvas.width / 2,
+        y: point.y * scaleY - lineCanvas.height / 2,
+      });
+      lineCtx.clearRect(0, 0, lineCanvas.width, lineCanvas.height);
+      lineCtx.save();
+      lineCtx.translate(lineCanvas.width / 2, lineCanvas.height / 2);
+      lineCtx.rotate(rotationRad);
+      drawScaledImageCentered(lineCtx, lineState.cropData, lineCanvas.width, lineCanvas.height);
+      lineCtx.strokeStyle = "rgba(0, 0, 0, 0.28)";
+      lineCtx.lineWidth = 2;
+      lineCtx.setLineDash([8, 6]);
+      lineCtx.beginPath();
+      let startPoint = project(lineDemo.points[0]);
+      lineCtx.moveTo(startPoint.x, startPoint.y);
+      for (let i = 1; i < lineDemo.points.length; i += 1) {
+        const pt = project(lineDemo.points[i]);
+        lineCtx.lineTo(pt.x, pt.y);
+      }
+      lineCtx.stroke();
+      lineCtx.setLineDash([]);
+      lineCtx.fillStyle = "rgba(0, 0, 0, 0.52)";
+      for (const point of lineDemo.points) {
+        const pt = project(point);
+        lineCtx.beginPath();
+        lineCtx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+        lineCtx.fill();
+      }
+      lineCtx.strokeStyle = "rgba(0, 0, 0, 0.72)";
+      lineCtx.lineWidth = 4;
+      lineCtx.beginPath();
+      startPoint = project(current.points[0]);
+      lineCtx.moveTo(startPoint.x, startPoint.y);
+      for (let i = 1; i < current.points.length; i += 1) {
+        const pt = project(current.points[i]);
+        lineCtx.lineTo(pt.x, pt.y);
+      }
+      lineCtx.stroke();
+      lineCtx.fillStyle = "rgba(0, 0, 0, 0.72)";
+      for (const point of current.points) {
+        const pt = project(point);
+        lineCtx.beginPath();
+        lineCtx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+        lineCtx.fill();
+      }
+      lineCtx.restore();
+      setText("lineSliderTime", `${current.elapsedMs.toFixed(2)} ms`);
+      setText("lineStepLabel", `${current.elapsedMs.toFixed(2)} ms`);
+      setText("lineTimeValue", `${current.elapsedMs.toFixed(2)} ms`);
+      setText("lineScoreValue", current.score.toFixed(1));
+      setText("lineP1Value", `${(lineDemo.crop.x + current.points[0].x).toFixed(1)}, ${(lineDemo.crop.y + current.points[0].y).toFixed(1)}`);
+      setText("lineP2Value", `${(lineDemo.crop.x + current.points[3].x).toFixed(1)}, ${(lineDemo.crop.y + current.points[3].y).toFixed(1)}`);
+      setText("lineShiftValue", `${current.meanShift.toFixed(3)} px`);
+      setText("lineSlopeValue", current.segmentError.toFixed(4));
+    }
+  </script>
+</body>
+</html>

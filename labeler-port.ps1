@@ -8,6 +8,45 @@ $script:LabelerHostPortFile = Join-Path $script:LabelerRoot "labeler-host-port.t
 # Docker Compose auto-loads .env from the project directory for ${VAR} substitution in compose YAML.
 $script:LabelerDotEnvFile = Join-Path $script:LabelerRoot ".env"
 
+function Get-LabelerDotEnvMap {
+    $map = [ordered]@{}
+    if (Test-Path -LiteralPath $script:LabelerDotEnvFile) {
+        try {
+            foreach ($line in [System.IO.File]::ReadAllLines($script:LabelerDotEnvFile)) {
+                if ($line -match '^\s*#') { continue }
+                if ($line -match '^\s*$') { continue }
+                if ($line -match '^\s*([^=\s]+)\s*=\s*(.*)\s*$') {
+                    $map[$Matches[1]] = $Matches[2]
+                }
+            }
+        } catch { }
+    }
+    return $map
+}
+
+function Save-LabelerDotEnvMap {
+    param([Parameter(Mandatory = $true)]$Map)
+    try {
+        $lines = @()
+        foreach ($entry in $Map.GetEnumerator()) {
+            $lines += "$($entry.Key)=$($entry.Value)"
+        }
+        [System.IO.File]::WriteAllText($script:LabelerDotEnvFile, ($lines -join "`r`n") + "`r`n")
+    } catch {
+        Write-Warning "Could not write $($script:LabelerDotEnvFile): $_"
+    }
+}
+
+function Set-LabelerDotEnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+    $map = Get-LabelerDotEnvMap
+    $map[$Key] = $Value
+    Save-LabelerDotEnvMap -Map $map
+}
+
 function Test-LabelerHostPortAvailable {
     param([Parameter(Mandatory = $true)][int]$Port)
     try {
@@ -40,12 +79,7 @@ function Save-LabelerHostPort {
     } catch {
         Write-Warning "Could not write $($script:LabelerHostPortFile): $_"
     }
-    try {
-        $line = "LABELER_HOST_PORT=$Port`r`n"
-        [System.IO.File]::WriteAllText($script:LabelerDotEnvFile, $line)
-    } catch {
-        Write-Warning "Could not write $($script:LabelerDotEnvFile): $_"
-    }
+    Set-LabelerDotEnvValue -Key "LABELER_HOST_PORT" -Value "$Port"
 }
 
 function Read-LabelerHostPort {

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import bisect
 import json
 import os
 import random
 import re
+import secrets
+import socket
 import sqlite3
 import threading
 import time
@@ -13,9 +16,10 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import Cookie, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
@@ -30,6 +34,13 @@ from agreement import (
     update_calibration_with_distance,
 )
 from streams_youtube import read_streams_csv, resolve_streams_csv
+from training.scene_geometry import (
+    build_projection_artifact,
+    build_label_initialized_analysis,
+    estimate_ball_world,
+    load_analysis_court_orthopoints,
+    project_court_grid,
+)
 
 _training_manager = None
 def _get_training_manager():
@@ -62,15 +73,51 @@ CAL_FILE = DATA_DIR / "agreement_calibration.json"
 QUALITY_FILE = DATA_DIR / "label_quality.json"
 IMAGE_INDEX_FILE = DATA_DIR / "labeler_image_index.json"
 LABELER_V2_DB_FILE = DATA_DIR / "labeler_v2.sqlite3"
+LABELER_HOST_PORT = int(os.environ.get("LABELER_HOST_PORT", "8081"))
+TRAINER_BASIC_AUTH_USER = os.environ.get("TRAINER_BASIC_AUTH_USER", "trainer")
+TRAINER_BASIC_AUTH_PASS = os.environ.get("TRAINER_BASIC_AUTH_PASS", "")
 ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 ALLOWED_CLIP_EXT = {".mp4", ".webm", ".mkv"}
-COURT_LINE_SLOTS = ("left", "far", "right", "near")
-NET_LINE_SLOTS = ("left_antenna", "net", "right_antenna")
-ALL_LINE_SLOTS = COURT_LINE_SLOTS + NET_LINE_SLOTS
 FRAME_STEM_CLIP_RE = re.compile(r"^(.+)_f\d+_[\d.]+s$", re.IGNORECASE)
 FRAME_TIME_IN_STEM_RE = re.compile(r"_f\d+_([\d.]+)s$", re.IGNORECASE)
 FRAME_INDEX_IN_STEM_RE = re.compile(r"_f(\d+)_", re.IGNORECASE)
 ROW_INDEX_IN_STEM_RE = re.compile(r"_r(\d+)(?:_|$)", re.IGNORECASE)
+
+
+def _detect_lan_ip() -> str | None:
+    sock: socket.socket | None = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("10.255.255.255", 1))
+        ip = sock.getsockname()[0]
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        return None
+    finally:
+        if sock is not None:
+            sock.close()
+    return None
+
+
+def _labeler_fallback_origins() -> list[str]:
+    origins: list[str] = []
+    lan_ip = _detect_lan_ip()
+    if lan_ip:
+        origins.append(f"http://{lan_ip}:{LABELER_HOST_PORT}")
+    origins.append(f"http://127.0.0.1:{LABELER_HOST_PORT}")
+    origins.append(f"http://localhost:{LABELER_HOST_PORT}")
+    return origins
+
+
+def _render_labeler_html() -> str:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    injected = (
+        "<script>"
+        f"window.__LABELER_FALLBACK_ORIGINS__ = {json.dumps(_labeler_fallback_origins())};"
+        "</script>"
+    )
+    return html.replace("</head>", f"  {injected}\n</head>", 1)
 
 
 def _is_labelable_frame(filename: str) -> bool:
@@ -109,10 +156,15 @@ def _utcnow_iso() -> str:
 
 
 def _db_connect() -> sqlite3.Connection:
+    LABELER_V2_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(LABELER_V2_DB_FILE, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.OperationalError:
+        # OneDrive/Windows-mounted volumes inside Docker can be flaky with WAL.
+        conn.execute("PRAGMA journal_mode = DELETE")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
@@ -175,6 +227,8 @@ CLAIM_TTL_SECONDS = 10 * 60  # 10 minutes
 
 # (safe_image_name, pass_n) → (client_id, monotonic timestamp of last touch)
 _claims: dict[tuple[str, int], tuple[str, float]] = {}
+_last_v2_served: dict[tuple[str, int], str] = {}
+_train_analysis_cache: dict[tuple[str, str | None, bool], dict[str, Any]] = {}
 
 
 def _now_mono() -> float:
@@ -698,6 +752,8 @@ def _infer_session_type_from_stream_name(stream_name: str) -> Literal["training"
         return None
     if any(t in n for t in ("tränare", "tranare", "träning", "traning", "training", "coach")):
         return "training"
+    if " vs " in f" {n} " or "_vs_" in n or "vs_" in n or "_vs" in n:
+        return "game"
     if any(
         t in n
         for t in (
@@ -721,16 +777,22 @@ def _infer_session_type_from_stream_name(stream_name: str) -> Literal["training"
 
 def _infer_image_session_type(name: str) -> tuple[Literal["training", "game"] | None, str | None]:
     rows = _load_stream_rows_cached()
+    name_guess = _infer_session_type_from_stream_name(name)
     if not rows:
-        return None, None
+        return name_guess, None
     idx = _row_index_from_image_name(name)
     if idx is None or idx < 0 or idx >= len(rows):
-        return None, None
+        return name_guess, None
     r = rows[idx]
     stream_name = (r.get("name") or "").strip() or None
     if not stream_name:
-        return None, None
-    return _infer_session_type_from_stream_name(stream_name), stream_name
+        return name_guess, None
+    stream_guess = _infer_session_type_from_stream_name(stream_name)
+    if stream_guess == "training":
+        return "training", stream_name
+    if stream_guess == "game" or name_guess == "game":
+        return "game", stream_name
+    return stream_guess or name_guess, stream_name
 
 
 def _init_labeler_v2_db() -> None:
@@ -756,8 +818,17 @@ def _init_labeler_v2_db() -> None:
                 session_type TEXT,
                 gender_category TEXT,
                 game_phase TEXT,
+                wizard_step TEXT,
+                session_substep TEXT,
+                geometry_substep TEXT,
+                people_substep TEXT,
                 distortion_k REAL NOT NULL DEFAULT 0.0,
                 distortion_params TEXT,
+                distortion_helper_points TEXT,
+                focus_region TEXT,
+                camera_model TEXT,
+                net_points TEXT,
+                net_polylines TEXT,
                 complete INTEGER NOT NULL DEFAULT 0,
                 skipped INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
@@ -774,6 +845,19 @@ def _init_labeler_v2_db() -> None:
                 skipped INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (image_name, pass_n, slot),
+                FOREIGN KEY (image_name, pass_n)
+                    REFERENCES labels(image_name, pass_n) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS geometry_polyline_points (
+                image_name TEXT NOT NULL,
+                pass_n INTEGER NOT NULL,
+                line_idx INTEGER NOT NULL,
+                point_idx INTEGER NOT NULL,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (image_name, pass_n, line_idx, point_idx),
                 FOREIGN KEY (image_name, pass_n)
                     REFERENCES labels(image_name, pass_n) ON DELETE CASCADE
             );
@@ -823,12 +907,23 @@ def _init_labeler_v2_db() -> None:
                 ON people_boxes(image_name, pass_n);
             CREATE INDEX IF NOT EXISTS idx_ignore_points_image_pass
                 ON ignore_points(image_name, pass_n);
+            CREATE INDEX IF NOT EXISTS idx_geometry_polyline_points_image_pass
+                ON geometry_polyline_points(image_name, pass_n, line_idx, point_idx);
             """
         )
         for ddl in (
             "ALTER TABLE labels ADD COLUMN ball_in_play INTEGER",
             "ALTER TABLE labels ADD COLUMN ball_visible INTEGER",
             "ALTER TABLE labels ADD COLUMN distortion_params TEXT",
+            "ALTER TABLE labels ADD COLUMN distortion_helper_points TEXT",
+            "ALTER TABLE labels ADD COLUMN focus_region TEXT",
+            "ALTER TABLE labels ADD COLUMN camera_model TEXT",
+            "ALTER TABLE labels ADD COLUMN net_points TEXT",
+            "ALTER TABLE labels ADD COLUMN net_polylines TEXT",
+            "ALTER TABLE labels ADD COLUMN wizard_step TEXT",
+            "ALTER TABLE labels ADD COLUMN session_substep TEXT",
+            "ALTER TABLE labels ADD COLUMN geometry_substep TEXT",
+            "ALTER TABLE labels ADD COLUMN people_substep TEXT",
         ):
             try:
                 conn.execute(ddl)
@@ -1109,12 +1204,6 @@ class AnnotationPayload(BaseModel):
         return self
 
 
-class V2LinePoint(BaseModel):
-    x: float | None = None
-    y: float | None = None
-    skipped: bool = False
-
-
 class V2BallLabel(BaseModel):
     center_x: float
     center_y: float
@@ -1134,10 +1223,81 @@ class V2PersonBox(BaseModel):
 
 
 class V2DistortionParams(BaseModel):
+    model: str = "division"
+    lambda_: float = Field(default=0.0, alias="lambda")
+    cx_offset: float = 0.0
+    cy_offset: float = 0.0
     k1: float = 0.0
     k2: float = 0.0
     k3: float = 0.0
     rotation_deg: float = 0.0
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class V2CameraIntrinsics(BaseModel):
+    fx: float = 0.0
+    fy: float = 0.0
+    cx: float = 0.0
+    cy: float = 0.0
+    skew: float = 0.0
+    image_width: float = 0.0
+    image_height: float = 0.0
+
+
+class V2CameraDistortion(BaseModel):
+    k1: float = 0.0
+    k2: float = 0.0
+    k3: float = 0.0
+    p1: float = 0.0
+    p2: float = 0.0
+    rotation_deg: float = 0.0
+
+
+class V2CameraPose(BaseModel):
+    tx_m: float | None = None
+    ty_m: float | None = None
+    tz_m: float | None = None
+    yaw_deg: float = 0.0
+    pitch_deg: float = 0.0
+    roll_deg: float = 0.0
+
+
+class V2CameraAnchor(BaseModel):
+    label: str
+    image: list[float] = Field(default_factory=list)
+    world: list[float] = Field(default_factory=list)
+
+
+class V2CameraModel(BaseModel):
+    version: str = "pinhole-radtan-v1alpha"
+    estimate_status: Literal["empty", "initial_guess", "refined"] = "initial_guess"
+    estimate_sources: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    intrinsics: V2CameraIntrinsics = Field(default_factory=V2CameraIntrinsics)
+    distortion: V2CameraDistortion = Field(default_factory=V2CameraDistortion)
+    pose: V2CameraPose = Field(default_factory=V2CameraPose)
+    net_anchors: list[V2CameraAnchor] = Field(default_factory=list)
+    focus_region: list[list[float]] = Field(default_factory=list)
+    court_polylines: list[list[list[float]]] = Field(default_factory=list)
+    court_center_hint: list[float] | None = None
+    court_model_quad: list[list[float]] = Field(default_factory=list)
+    center_axis_points: list[list[float]] = Field(default_factory=list)
+    center_axis_locked: bool = False
+    coordinate_system: dict[str, Any] = Field(default_factory=dict)
+    center_line_t: float = 0.5
+    net_height_m: float = 2.35
+    left_net_dx_px: float = 0.0
+    right_net_dx_px: float = 0.0
+    left_antenna_dx_px: float = 0.0
+    right_antenna_dx_px: float = 0.0
+    court_support_polyline: list[list[float]] = Field(default_factory=list)
+    court_quad_image: list[list[float]] = Field(default_factory=list)
+    court_model_segments: list[dict[str, Any]] = Field(default_factory=list)
+    court_homography: list[list[float]] | None = None
+    notes: list[str] = Field(default_factory=list)
 
 
 class V2LabelPayload(BaseModel):
@@ -1146,10 +1306,19 @@ class V2LabelPayload(BaseModel):
     gender_category: Literal["women", "men", "mixed"] | None = None
     ball_in_play: bool | None = None
     ball_visible: bool | None = None
+    wizard_step: str | None = None
+    session_substep: str | None = None
+    geometry_substep: str | None = None
+    people_substep: str | None = None
     distortion_k: float = 0.0
     distortion_params: V2DistortionParams | None = None
+    distortion_helper_points: list[list[float]] = Field(default_factory=list)
     complete: bool = False
-    lines: dict[str, V2LinePoint] = Field(default_factory=dict)
+    geometry_polylines: list[list[list[float]]] = Field(default_factory=list)
+    net_points: list[list[float]] = Field(default_factory=list)
+    net_polylines: list[list[list[float]]] = Field(default_factory=list)
+    focus_region: list[list[float]] = Field(default_factory=list)
+    camera_model: V2CameraModel | None = None
     people: list[V2PersonBox] = Field(default_factory=list)
     ball: V2BallLabel | None = None
     ignore_points: list[list[float]] = Field(default_factory=list)
@@ -1178,6 +1347,54 @@ class ClipEventsPayload(BaseModel):
 
 
 app = FastAPI()
+
+
+def _trainer_auth_enabled() -> bool:
+    return bool(TRAINER_BASIC_AUTH_PASS)
+
+
+def _trainer_auth_failed() -> Response:
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Trainer"'},
+    )
+
+
+def _trainer_authorized(request: Request) -> bool:
+    client_host = (request.client.host if request.client else "") or ""
+    host_header = (request.headers.get("host", "") or "").split(":")[0].lower()
+    request_host = (request.url.hostname or "").lower() if request.url.hostname else ""
+    if (
+        client_host in {"127.0.0.1", "::1"}
+        or host_header in {"localhost", "127.0.0.1", "::1", "[::1]"}
+        or request_host in {"localhost", "127.0.0.1", "::1"}
+    ):
+        return True
+    if not _trainer_auth_enabled():
+        return True
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:], validate=True).decode("utf-8")
+    except Exception:
+        return False
+    username, sep, password = decoded.partition(":")
+    if not sep:
+        return False
+    return (
+        secrets.compare_digest(username, TRAINER_BASIC_AUTH_USER)
+        and secrets.compare_digest(password, TRAINER_BASIC_AUTH_PASS)
+    )
+
+
+@app.middleware("http")
+async def trainer_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if path == "/train" or path.startswith("/api/train"):
+        if not _trainer_authorized(request):
+            return _trainer_auth_failed()
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -1211,7 +1428,15 @@ def train_page() -> Response:
 
 @app.get("/")
 def home_page() -> Response:
-    return FileResponse(STATIC_DIR / "home.html")
+    resp = HTMLResponse(_render_labeler_html())
+    resp.set_cookie(
+        "labeler_id",
+        str(uuid.uuid4()),
+        max_age=365 * 86400,
+        httponly=False,
+        samesite="lax",
+    )
+    return resp
 
 
 @app.get("/labeler-style.css")
@@ -1233,7 +1458,7 @@ def labeler_app() -> Response:
 
 @app.get("/labeler")
 def labeler_page(labeler_id: str | None = Cookie(default=None)) -> Response:
-    resp = FileResponse(STATIC_DIR / "index.html")
+    resp = HTMLResponse(_render_labeler_html())
     if not labeler_id:
         resp.set_cookie(
             "labeler_id",
@@ -1487,8 +1712,13 @@ def _load_v2_label_record(safe: str, pass_n: int) -> dict:
 
         label_row = conn.execute(
             """
-            SELECT session_type, gender_category, ball_in_play, ball_visible, distortion_k, complete, skipped
+            SELECT session_type, gender_category, ball_in_play, ball_visible, wizard_step, session_substep, geometry_substep, people_substep, distortion_k, complete, skipped
+                 , focus_region
+                 , camera_model
+                 , net_points
+                 , net_polylines
                  , distortion_params
+                 , distortion_helper_points
             FROM labels
             WHERE image_name = ? AND pass_n = ?
             """,
@@ -1499,6 +1729,15 @@ def _load_v2_label_record(safe: str, pass_n: int) -> dict:
             SELECT slot, x, y, skipped
             FROM geometry_lines
             WHERE image_name = ? AND pass_n = ?
+            """,
+            (safe, pass_n),
+        ).fetchall()
+        polyline_rows = conn.execute(
+            """
+            SELECT line_idx, point_idx, x, y
+            FROM geometry_polyline_points
+            WHERE image_name = ? AND pass_n = ?
+            ORDER BY line_idx, point_idx
             """,
             (safe, pass_n),
         ).fetchall()
@@ -1543,30 +1782,49 @@ def _load_v2_label_record(safe: str, pass_n: int) -> dict:
             (safe, pass_n),
         ).fetchall()
 
-    lines: dict[str, dict[str, float | bool | None]] = {}
-    for row in line_rows:
-        lines[str(row["slot"])] = {
-            "x": row["x"],
-            "y": row["y"],
-            "skipped": bool(row["skipped"]),
-        }
+    geometry_polylines: list[list[list[float]]] = []
+    line_map: dict[int, list[list[float]]] = {}
+    for row in polyline_rows:
+        line_idx = int(row["line_idx"])
+        line_map.setdefault(line_idx, []).append([float(row["x"]), float(row["y"])])
+    if line_map:
+        geometry_polylines = [line_map[idx] for idx in sorted(line_map)]
+    else:
+        legacy_lines: dict[str, dict[str, float | bool | None]] = {}
+        for row in line_rows:
+            legacy_lines[str(row["slot"])] = {
+                "x": row["x"],
+                "y": row["y"],
+                "skipped": bool(row["skipped"]),
+            }
+        ordered_legacy = []
+        for slot in ("left", "far", "right", "near", "left_antenna", "net", "right_antenna"):
+            line = legacy_lines.get(slot)
+            if not line or line.get("skipped") or line.get("x") is None or line.get("y") is None:
+                continue
+            ordered_legacy.append([[float(line["x"]), float(line["y"])]])
+        geometry_polylines = ordered_legacy
 
-    distortion_params = {"k1": 0.0, "k2": 0.0, "k3": 0.0}
+    distortion_params = {"model": "division", "lambda": 0.0, "cx_offset": 0.0, "cy_offset": 0.0, "k1": 0.0, "k2": 0.0, "k3": 0.0, "rotation_deg": 0.0}
     if label_row:
         raw_params = label_row["distortion_params"]
         if raw_params:
             try:
                 parsed = json.loads(raw_params)
                 distortion_params = {
+                    "model": str(parsed.get("model", "division")),
+                    "lambda": float(parsed.get("lambda", 0.0)),
+                    "cx_offset": float(parsed.get("cx_offset", 0.0)),
+                    "cy_offset": float(parsed.get("cy_offset", 0.0)),
                     "k1": float(parsed.get("k1", 0.0)),
                     "k2": float(parsed.get("k2", 0.0)),
                     "k3": float(parsed.get("k3", 0.0)),
                     "rotation_deg": float(parsed.get("rotation_deg", 0.0)),
                 }
             except (TypeError, ValueError, json.JSONDecodeError):
-                distortion_params = {"k1": float(label_row["distortion_k"]), "k2": 0.0, "k3": 0.0, "rotation_deg": 0.0}
+                distortion_params = {"model": "division", "lambda": 0.0, "cx_offset": 0.0, "cy_offset": 0.0, "k1": float(label_row["distortion_k"]), "k2": 0.0, "k3": 0.0, "rotation_deg": 0.0}
         else:
-            distortion_params = {"k1": float(label_row["distortion_k"]), "k2": 0.0, "k3": 0.0, "rotation_deg": 0.0}
+            distortion_params = {"model": "division", "lambda": 0.0, "cx_offset": 0.0, "cy_offset": 0.0, "k1": float(label_row["distortion_k"]), "k2": 0.0, "k3": 0.0, "rotation_deg": 0.0}
 
     return {
         "image": safe,
@@ -1575,11 +1833,28 @@ def _load_v2_label_record(safe: str, pass_n: int) -> dict:
         "skipped": bool(label_row["skipped"]) if label_row else False,
         "distortion_k": float(label_row["distortion_k"]) if label_row else 0.0,
         "distortion_params": distortion_params,
+        "distortion_helper_points": json.loads(label_row["distortion_helper_points"]) if label_row and label_row["distortion_helper_points"] else [],
         "session_type": label_row["session_type"] if label_row else None,
         "gender_category": label_row["gender_category"] if label_row else None,
         "ball_in_play": bool(label_row["ball_in_play"]) if label_row and label_row["ball_in_play"] is not None else None,
         "ball_visible": bool(label_row["ball_visible"]) if label_row and label_row["ball_visible"] is not None else None,
-        "lines": lines,
+        "wizard_step": label_row["wizard_step"] if label_row else None,
+        "session_substep": label_row["session_substep"] if label_row else None,
+        "geometry_substep": label_row["geometry_substep"] if label_row else None,
+        "people_substep": label_row["people_substep"] if label_row else None,
+        "focus_region": json.loads(label_row["focus_region"]) if label_row and label_row["focus_region"] else [],
+        "camera_model": json.loads(label_row["camera_model"]) if label_row and label_row["camera_model"] else None,
+        "geometry_polylines": geometry_polylines,
+        "net_points": (
+            json.loads(label_row["net_points"])
+            if label_row and label_row["net_points"]
+            else (
+                [point for line in json.loads(label_row["net_polylines"]) for point in line]
+                if label_row and label_row["net_polylines"]
+                else []
+            )
+        ),
+        "net_polylines": json.loads(label_row["net_polylines"]) if label_row and label_row["net_polylines"] else [],
         "people": [dict(row) for row in people_rows],
         "ball": dict(ball_row) if ball_row else None,
         "ignore_points": [[float(row["x"]), float(row["y"])] for row in ignore_rows],
@@ -1593,10 +1868,6 @@ def _load_v2_label_record(safe: str, pass_n: int) -> dict:
             "source_group_label": image_meta["source_group_label"],
             "source_row_index": image_meta["source_row_index"],
         },
-        "slots": {
-            "court": list(COURT_LINE_SLOTS),
-            "net": list(NET_LINE_SLOTS),
-        },
     }
 
 
@@ -1606,11 +1877,40 @@ def _upsert_v2_label(payload: V2LabelPayload, pass_n: int) -> None:
     if not img_path.is_file():
         raise HTTPException(404, "Image not found; save the file under data/images first")
 
-    clean_lines: dict[str, V2LinePoint] = {}
-    for slot, line in payload.lines.items():
-        if slot not in ALL_LINE_SLOTS:
+    clean_polylines: list[list[tuple[float, float]]] = []
+    for line in payload.geometry_polylines:
+        if not isinstance(line, list):
             continue
-        clean_lines[slot] = line
+        clean_line: list[tuple[float, float]] = []
+        for point in line:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                clean_line.append((float(point[0]), float(point[1])))
+            except (TypeError, ValueError):
+                continue
+        if clean_line:
+            clean_polylines.append(clean_line)
+    clean_net_points: list[tuple[float, float]] = []
+    if payload.net_points:
+        for point in payload.net_points:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                clean_net_points.append((float(point[0]), float(point[1])))
+            except (TypeError, ValueError):
+                continue
+    else:
+        for line in payload.net_polylines:
+            if not isinstance(line, list):
+                continue
+            for point in line:
+                if not isinstance(point, (list, tuple)) or len(point) < 2:
+                    continue
+                try:
+                    clean_net_points.append((float(point[0]), float(point[1])))
+                except (TypeError, ValueError):
+                    continue
 
     now = _utcnow_iso()
     with _db_connect() as conn:
@@ -1618,16 +1918,26 @@ def _upsert_v2_label(payload: V2LabelPayload, pass_n: int) -> None:
             """
             INSERT INTO labels (
                 image_name, pass_n, session_type, gender_category, ball_in_play, ball_visible,
-                distortion_k, distortion_params, complete, skipped, updated_at
+                wizard_step, session_substep, geometry_substep, people_substep,
+                distortion_k, distortion_params, distortion_helper_points, focus_region, camera_model, net_points, net_polylines, complete, skipped, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(image_name, pass_n) DO UPDATE SET
                 session_type = excluded.session_type,
                 gender_category = excluded.gender_category,
                 ball_in_play = excluded.ball_in_play,
                 ball_visible = excluded.ball_visible,
+                wizard_step = excluded.wizard_step,
+                session_substep = excluded.session_substep,
+                geometry_substep = excluded.geometry_substep,
+                people_substep = excluded.people_substep,
                 distortion_k = excluded.distortion_k,
                 distortion_params = excluded.distortion_params,
+                distortion_helper_points = excluded.distortion_helper_points,
+                focus_region = excluded.focus_region,
+                camera_model = excluded.camera_model,
+                net_points = excluded.net_points,
+                net_polylines = excluded.net_polylines,
                 complete = excluded.complete,
                 skipped = 0,
                 updated_at = excluded.updated_at
@@ -1639,8 +1949,17 @@ def _upsert_v2_label(payload: V2LabelPayload, pass_n: int) -> None:
                 payload.gender_category,
                 1 if payload.ball_in_play is True else 0 if payload.ball_in_play is False else None,
                 1 if payload.ball_visible is True else 0 if payload.ball_visible is False else None,
+                payload.wizard_step,
+                payload.session_substep,
+                payload.geometry_substep,
+                payload.people_substep,
                 float(payload.distortion_k),
-                json.dumps((payload.distortion_params.model_dump() if payload.distortion_params else {"k1": float(payload.distortion_k), "k2": 0.0, "k3": 0.0})),
+                json.dumps((payload.distortion_params.model_dump(by_alias=True) if payload.distortion_params else {"k1": float(payload.distortion_k), "k2": 0.0, "k3": 0.0})),
+                json.dumps(payload.distortion_helper_points),
+                json.dumps(payload.focus_region),
+                json.dumps(payload.camera_model.model_dump() if payload.camera_model else None),
+                json.dumps([[x, y] for x, y in clean_net_points]),
+                json.dumps(payload.net_polylines),
                 1 if payload.complete else 0,
                 now,
             ),
@@ -1649,32 +1968,21 @@ def _upsert_v2_label(payload: V2LabelPayload, pass_n: int) -> None:
             "DELETE FROM geometry_lines WHERE image_name = ? AND pass_n = ?",
             (safe, pass_n),
         )
-        for slot in ALL_LINE_SLOTS:
-            line = clean_lines.get(slot)
-            if line is None:
-                continue
-            if line.skipped:
+        conn.execute(
+            "DELETE FROM geometry_polyline_points WHERE image_name = ? AND pass_n = ?",
+            (safe, pass_n),
+        )
+        for line_idx, line in enumerate(clean_polylines):
+            for point_idx, point in enumerate(line):
                 conn.execute(
                     """
-                    INSERT INTO geometry_lines (
-                        image_name, pass_n, slot, x, y, skipped, updated_at
+                    INSERT INTO geometry_polyline_points (
+                        image_name, pass_n, line_idx, point_idx, x, y, updated_at
                     )
-                    VALUES (?, ?, ?, NULL, NULL, 1, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (safe, pass_n, slot, now),
+                    (safe, pass_n, line_idx, point_idx, point[0], point[1], now),
                 )
-                continue
-            if line.x is None or line.y is None:
-                continue
-            conn.execute(
-                """
-                INSERT INTO geometry_lines (
-                    image_name, pass_n, slot, x, y, skipped, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, 0, ?)
-                """,
-                (safe, pass_n, slot, float(line.x), float(line.y), now),
-            )
 
         conn.execute(
             "DELETE FROM people_boxes WHERE image_name = ? AND pass_n = ?",
@@ -1765,16 +2073,14 @@ def _choose_next_from_pool(
             pool = available
     if not pool:
         return None
-    if current_safe and len(pool) > 1:
-        after = [n for n in pool if n > current_safe]
-        before = [n for n in pool if n <= current_safe and n != current_safe]
-        ordered = after + before
-        if ordered:
-            return ordered[0]
-    for name in pool:
-        if name != current_safe:
-            return name
-    return pool[0]
+    candidates = [name for name in pool if name != current_safe] or pool
+    return random.choice(candidates)
+
+
+def _remember_v2_served(client_id: str | None, pass_n: int, image_name: str | None) -> None:
+    if not client_id or not image_name:
+        return
+    _last_v2_served[(client_id, pass_n)] = image_name
 
 
 def _next_v2_image_for_pass(
@@ -1822,6 +2128,7 @@ def save_label_v2(
     next_name = _next_v2_image_for_pass(pass_n, safe, client_id=labeler_id)
     if next_name and labeler_id:
         _claim_image(next_name, pass_n, labeler_id)
+        _remember_v2_served(labeler_id, pass_n, next_name)
     return {
         "saved": True,
         "image": safe,
@@ -1844,9 +2151,12 @@ def api_next_v2(
             cur = _safe_filename(current)
         except HTTPException:
             cur = None
+    if cur is None:
+        cur = _last_v2_served.get((cid, pass_n))
     nxt = _next_v2_image_for_pass(pass_n, cur, client_id=cid)
     if nxt:
         _claim_image(nxt, pass_n, cid)
+        _remember_v2_served(cid, pass_n, nxt)
     resp = JSONResponse(content={"next": nxt})
     if not labeler_id:
         resp.set_cookie("labeler_id", cid, max_age=365 * 86400, httponly=False, samesite="lax")
@@ -1880,6 +2190,7 @@ def skip_image_v2(
     next_name = _next_v2_image_for_pass(pass_n, safe, client_id=labeler_id)
     if next_name and labeler_id:
         _claim_image(next_name, pass_n, labeler_id)
+        _remember_v2_served(labeler_id, pass_n, next_name)
     return {"skipped": safe, "next_image": next_name}
 
 
@@ -2178,8 +2489,9 @@ def train_start(
     epochs: int = Query(50),
     batch_size: int = Query(1),
     lr: float = Query(1e-4),
-    image_size: int = Query(384),
-    targets: str = Query("court,net,ball,people"),
+    image_size: int = Query(320),
+    model_profile: str = Query("fast"),
+    targets: str = Query("court,net,ball"),
     resume: bool = Query(False),
     augment: bool = Query(True),
 ):
@@ -2192,6 +2504,7 @@ def train_start(
         batch_size=batch_size,
         lr=lr,
         image_size=image_size,
+        model_profile=model_profile,
         targets=tgt_list,
         resume=resume,
         augment=augment,
@@ -2216,38 +2529,11 @@ def train_reset():
 
 @app.get("/api/train/dataset-counts")
 def train_dataset_counts():
-    """Count how many labeled images have each annotation type."""
+    """Count usable SQLite-backed training labels."""
+    from training.export_sqlite_to_csv import sqlite_training_counts
+
     _ensure_dirs()
-    ann_dir = _ann_dir()
-    counts = {"court": 0, "net": 0, "ball": 0, "people": 0, "total": 0}
-    if not ann_dir.is_dir():
-        return counts
-    seen: set[str] = set()
-    for p in ann_dir.iterdir():
-        if p.suffix.lower() != ".json":
-            continue
-        raw = p.stem
-        for sfx in ("_merged", "_r1"):
-            if raw.endswith(sfx):
-                raw = raw[: -len(sfx)]
-                break
-        if raw in seen:
-            continue
-        seen.add(raw)
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        counts["total"] += 1
-        if data.get("court_polylines"):
-            counts["court"] += 1
-        if data.get("net_polylines"):
-            counts["net"] += 1
-        if data.get("balls"):
-            counts["ball"] += 1
-        if data.get("people"):
-            counts["people"] += 1
-    return counts
+    return sqlite_training_counts(DATA_DIR, pass_n=1, complete_only=False)
 
 
 @app.get("/api/train/losses")
@@ -2336,11 +2622,11 @@ def train_test(image: str = Query(None)):
         img_path = IMAGES_DIR / safe
         if not img_path.exists():
             raise HTTPException(404, detail=f"Image not found: {safe}")
-        img_sz = 640
+        img_sz = 256
         try:
-            img_sz = int(mgr.config.get("image_size", 640) or 640)
+            img_sz = int(mgr.config.get("image_size", 256) or 256)
         except (TypeError, ValueError):
-            img_sz = 640
+            img_sz = 256
         result = mgr.predict(img_path, image_size=img_sz)
         if isinstance(result, dict) and result.get("error"):
             raise HTTPException(503, detail=result["error"])
@@ -2352,6 +2638,106 @@ def train_test(image: str = Query(None)):
         import traceback
         traceback.print_exc()
         raise HTTPException(500, detail=f"Inference failed: {e}") from e
+
+
+def _analysis_court_orthopoints(image_name: str, pass_n: int = 1) -> list[list[float]]:
+    with _db_connect() as conn:
+        return load_analysis_court_orthopoints(conn, image_name, pass_n)
+
+
+@app.get("/api/train/labeled-images")
+def train_labeled_images():
+    _ensure_dirs()
+    items: list[dict[str, Any]] = []
+    with _db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT image_name, wizard_step, complete
+            FROM labels
+            WHERE pass_n = 1
+            ORDER BY image_name
+            """
+        ).fetchall()
+        for row in rows:
+            image_name = str(row["image_name"])
+            try:
+                label_record = _load_v2_label_record(image_name, pass_n=1)
+                raw_polylines = label_record.get("geometry_polylines") or []
+                court_points = raw_polylines[0] if raw_polylines and raw_polylines[0] else _analysis_court_orthopoints(image_name, pass_n=1)
+            except Exception:
+                court_points = []
+            ball_n = conn.execute(
+                "SELECT COUNT(*) AS n FROM ball_labels WHERE image_name = ? AND pass_n = 1",
+                (image_name,),
+            ).fetchone()
+            if not court_points and not (ball_n and int(ball_n["n"] or 0) > 0):
+                continue
+            items.append({
+                "image": image_name,
+                "complete": bool(row["complete"]),
+                "wizard_step": row["wizard_step"],
+                "court_points": len(court_points),
+                "ball_labels": int(ball_n["n"] or 0) if ball_n else 0,
+            })
+    return {"items": items}
+
+
+@app.get("/api/train/analyze-image")
+def train_analyze_image(image: str, include_nn: bool = True):
+    _ensure_dirs()
+    safe = _safe_filename(image)
+    img_path = _images_dir() / safe
+    if not img_path.exists():
+        raise HTTPException(404, detail=f"Image not found: {safe}")
+    label_record = _load_v2_label_record(safe, pass_n=1)
+    cache_key = (safe, label_record.get("updated_at"), bool(include_nn))
+    cached = _train_analysis_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    label_analysis = build_label_initialized_analysis(
+        image_path=img_path,
+        label_record=label_record,
+        fallback_court_points=_analysis_court_orthopoints(safe, pass_n=1),
+    )
+    nn_analysis = None
+    if include_nn:
+        mgr = _get_training_manager()
+        if mgr is not None:
+            img_sz = 256
+            try:
+                img_sz = int(mgr.config.get("image_size", 256) or 256)
+            except (TypeError, ValueError):
+                img_sz = 256
+            nn_result = mgr.predict(img_path, image_size=img_sz)
+            if isinstance(nn_result, dict) and not nn_result.get("error"):
+                nn_camera = nn_result.get("camera_model")
+                nn_analysis = {
+                    "source": "nn",
+                    "court_points": nn_result.get("court_points") or [],
+                    "net_points": nn_result.get("net_points") or [],
+                    "ball": nn_result.get("ball"),
+                    "camera_model": nn_camera,
+                    "court_grid": project_court_grid(nn_camera),
+                    "ball_world": estimate_ball_world(nn_result.get("ball"), nn_camera),
+                    "projection_artifact": build_projection_artifact(
+                        seed_camera_model=nn_camera,
+                        refined_camera_model=nn_camera,
+                        ball=nn_result.get("ball"),
+                    ),
+                    "coarse_proposals": nn_result.get("coarse_proposals") or {},
+                }
+    result = {
+        "image": safe,
+        "image_url": f"/api/image?file={quote(safe)}",
+        "label_record": label_record,
+        "label_analysis": label_analysis,
+        "nn_analysis": nn_analysis,
+    }
+    _train_analysis_cache[cache_key] = result
+    if len(_train_analysis_cache) > 64:
+        oldest_key = next(iter(_train_analysis_cache))
+        _train_analysis_cache.pop(oldest_key, None)
+    return result
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

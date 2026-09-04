@@ -71,6 +71,90 @@ function Get-LabelerPublishedHostPort {
     return $null
 }
 
+function New-RandomSecret {
+    param([int]$Length = 20)
+    $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+    -join (1..$Length | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
+}
+
+function Ensure-TrainerAuthConfig {
+    $envMap = Get-LabelerDotEnvMap
+    $changed = $false
+    if (-not $envMap.Contains('TRAINER_BASIC_AUTH_USER') -or [string]::IsNullOrWhiteSpace([string]$envMap['TRAINER_BASIC_AUTH_USER'])) {
+        $envMap['TRAINER_BASIC_AUTH_USER'] = 'trainer'
+        $changed = $true
+    }
+    if (-not $envMap.Contains('TRAINER_BASIC_AUTH_PASS') -or [string]::IsNullOrWhiteSpace([string]$envMap['TRAINER_BASIC_AUTH_PASS'])) {
+        $envMap['TRAINER_BASIC_AUTH_PASS'] = New-RandomSecret -Length 18
+        $changed = $true
+    }
+    if ($changed) {
+        Save-LabelerDotEnvMap -Map $envMap
+    }
+    return @{
+        User = [string]$envMap['TRAINER_BASIC_AUTH_USER']
+        Pass = [string]$envMap['TRAINER_BASIC_AUTH_PASS']
+    }
+}
+
+function Start-CloudflaredTunnel {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port
+    )
+    $cloudflared = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if (-not $cloudflared) {
+        Write-Warning "cloudflared not found; skipping public tunnel."
+        return $null
+    }
+
+    $pidFile = Join-Path $PSScriptRoot "data\cloudflared-labeler.pid"
+    $logFile = Join-Path $PSScriptRoot "data\cloudflared-labeler.log"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pidFile) | Out-Null
+
+    if (Test-Path -LiteralPath $pidFile) {
+        try {
+            $oldPid = [int]([IO.File]::ReadAllText($pidFile).Trim())
+            $oldProc = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+            if ($oldProc) {
+                Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        Remove-Item $pidFile -ErrorAction SilentlyContinue
+    }
+    Remove-Item $logFile -ErrorAction SilentlyContinue
+
+    $args = @('tunnel', '--url', "http://127.0.0.1:$Port", '--no-autoupdate', '--logfile', $logFile)
+    $proc = Start-Process -FilePath $cloudflared.Source -ArgumentList $args -PassThru -WindowStyle Hidden
+    [IO.File]::WriteAllText($pidFile, "$($proc.Id)`r`n")
+
+    $deadline = (Get-Date).AddSeconds(25)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $logFile) {
+            $text = Get-Content -LiteralPath $logFile -Raw -ErrorAction SilentlyContinue
+            if ($text -match 'https://[a-z0-9.-]+trycloudflare\.com') {
+                return $Matches[0]
+            }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Warning "Cloudflare tunnel started but URL was not detected yet. Check $logFile"
+    return $null
+}
+
+function Test-UrlReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [int]$TimeoutSec = 5
+    )
+    try {
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500)
+    }
+    catch {
+        return $false
+    }
+}
+
 if ($Port -le 0) {
     $Port = Get-LabelerHostPort -Preferred 8081
     Write-Host "Using host port $Port (first free in 8081-8099)." -ForegroundColor Cyan
@@ -81,8 +165,9 @@ if ($Port -le 0) {
 
 Save-LabelerHostPort -Port $Port
 $env:LABELER_HOST_PORT = "$Port"
-$url = "http://localhost:$Port/"
+$url = "http://localhost:$Port/labeler"
 Write-Host "LABELER_HOST_PORT=$Port written to .env and labeler-host-port.txt." -ForegroundColor DarkCyan
+$trainerAuth = Ensure-TrainerAuthConfig
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     Write-Error "Docker CLI not found. Install Docker Desktop and ensure 'docker' is on PATH."
@@ -130,7 +215,7 @@ while ($composeAttempt -lt 18 -and -not $composeOk) {
     if ($retryable) {
         Write-Warning "Port $Port is in use. Trying the next free port in 8081-8099."
         $Port = Get-LabelerHostPort -Preferred ($Port + 1)
-        $url = "http://localhost:$Port/"
+        $url = "http://localhost:$Port/labeler"
         continue
     }
 
@@ -159,7 +244,7 @@ if ($published) {
         Save-LabelerHostPort -Port $Port
         $env:LABELER_HOST_PORT = "$Port"
     }
-    $url = "http://localhost:$Port/"
+    $url = "http://localhost:$Port/labeler"
 } else {
     Write-Warning "Could not read the published port from docker compose port; using $url"
 }
@@ -198,10 +283,25 @@ if ($ready) {
     Write-Warning "Opening $url anyway."
 }
 
-Write-Host "Opening browser: $url" -ForegroundColor Green
+$publicUrl = Start-CloudflaredTunnel -Port $Port
+$shareUrl = $url
+if ($publicUrl) {
+    Write-Host "Checking public tunnel: $publicUrl" -ForegroundColor DarkGray
+    if (Test-UrlReady -Url $publicUrl -TimeoutSec 8) {
+        $shareUrl = $publicUrl
+        Write-Host "Shareable labeler URL: $publicUrl" -ForegroundColor Green
+    } else {
+        Write-Warning "Public tunnel did not respond; falling back to local URL."
+    }
+} else {
+    Write-Warning "Public tunnel did not come up; falling back to local URL."
+}
+Write-Host "Trainer auth: $($trainerAuth.User) / $($trainerAuth.Pass)" -ForegroundColor Yellow
+
+Write-Host "Opening browser: $shareUrl" -ForegroundColor Green
 try {
-    Start-Process $url
+    Start-Process $shareUrl
 }
 catch {
-    Write-Warning "Could not launch the default browser. Open manually: $url"
+    Write-Warning "Could not launch the default browser. Open manually: $shareUrl"
 }

@@ -55,6 +55,22 @@
     #testOverlay { position: relative; display: inline-block; max-width: 100%; }
     #testOverlay img { width: 100%; max-width: 100%; border-radius: 6px; display: block; }
     #testOverlay canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+    .analysis-toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+    .analysis-toolbar .btn { padding:8px 12px; }
+    .analysis-toolbar .btn.active { background:#30363d; border-color:#58a6ff; color:#fff; }
+    .analysis-grid { display:grid; grid-template-columns: minmax(0, 1fr) 320px; gap:16px; align-items:start; }
+    .analysis-panel { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px; min-width:0; }
+    .analysis-side { display:grid; gap:12px; }
+    .analysis-stage { background:#05080d; border:1px solid #30363d; border-radius:8px; padding:10px; overflow:hidden; }
+    #testViewCanvas { width:100%; height:auto; display:block; background:#05080d; border:0; border-radius:4px; }
+    .metric-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; }
+    .metric-card { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px; }
+    .metric-label { font-size:0.72rem; color:#8b949e; margin-bottom:4px; }
+    .metric-value { font-size:1rem; font-weight:600; color:#f0f6fc; }
+    .slider-block { display:grid; gap:6px; }
+    .slider-head { display:flex; justify-content:space-between; gap:8px; font-size:0.78rem; color:#8b949e; }
+    .analysis-summary { display:flex; flex-wrap:wrap; gap:8px; }
+    .analysis-chip { background:#0d1117; border:1px solid #30363d; border-radius:999px; padding:6px 10px; font-size:0.76rem; color:#c9d1d9; }
 
     @media (max-width: 900px) {
       .container { padding: 12px; }
@@ -62,6 +78,7 @@
       .col-chart, .col-side { flex: 1 1 auto; width: 100%; max-width: 100%; }
       .card { padding: 14px; }
       #chartCanvas { min-height: 260px; }
+      .analysis-grid { grid-template-columns: 1fr; }
     }
 
     @media (max-width: 640px) {
@@ -97,16 +114,64 @@
           <canvas id="chartCanvas" height="360"></canvas>
           <div class="subcontrols">
             <label for="smoothRange">Running average</label>
-            <input id="smoothRange" type="range" min="1" max="10" step="1" value="1" />
+            <input id="smoothRange" type="range" min="1" max="100" step="1" value="1" />
             <span id="smoothValue" class="value">1 (off)</span>
           </div>
           <p class="status-bar" id="statusBar">Idle</p>
         </div>
         <div class="card" id="testCard" style="display:none">
-          <h2>Model predictions</h2>
-          <div id="testOverlay">
-            <img id="testImg" />
-            <canvas id="testCanvas"></canvas>
+          <h2>Refinement analysis</h2>
+          <div class="analysis-toolbar">
+            <button class="btn active" id="btnViewRaw">Raw image</button>
+            <button class="btn" id="btnViewInitial">Initial pinhole-like</button>
+            <button class="btn" id="btnViewTrue">True pinhole</button>
+            <button class="btn" id="btnViewTop">Top projection</button>
+            <button class="btn" id="btnViewSide">Side projection</button>
+          </div>
+          <div class="analysis-grid">
+            <div class="analysis-stage">
+              <canvas id="testViewCanvas" width="960" height="540"></canvas>
+              <img id="testImg" style="display:none" />
+            </div>
+            <div class="analysis-side">
+              <div class="analysis-panel">
+                <div class="slider-block">
+                  <div class="slider-head"><span>Line refinement</span><strong id="lineRefineTime">0.00 ms</strong></div>
+                  <input id="lineRefineSlider" type="range" min="0" max="0" step="1" value="0" />
+                </div>
+                <div class="slider-block" style="margin-top:10px;">
+                  <div class="slider-head"><span>Camera model fit</span><strong id="cameraFitTime">0.00 ms</strong></div>
+                  <input id="cameraFitSlider" type="range" min="0" max="0" step="1" value="0" />
+                </div>
+                <div class="slider-block" style="margin-top:10px;">
+                  <div class="slider-head"><span>Ball refinement</span><strong id="ballRefineTime">0.00 ms</strong></div>
+                  <input id="ballRefineSlider" type="range" min="0" max="0" step="1" value="0" />
+                </div>
+              </div>
+              <div class="metric-grid">
+                <div class="metric-card">
+                  <div class="metric-label">View</div>
+                  <div class="metric-value" id="metricView">Raw</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-label">Ball Height</div>
+                  <div class="metric-value" id="metricBallHeight">-</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-label">Ball Depth</div>
+                  <div class="metric-value" id="metricBallDepth">-</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-label">Back Line Bend</div>
+                  <div class="metric-value" id="metricLineBend">-</div>
+                </div>
+              </div>
+              <div class="analysis-panel">
+                <h3 style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:#f0f6fc;">Refinement diagnostics</h3>
+                <pre id="diagnosticsPanel" style="white-space:pre-wrap;font-size:0.74rem;line-height:1.35;color:#c9d1d9;margin:0;"></pre>
+              </div>
+              <div class="analysis-summary" id="analysisSummary"></div>
+            </div>
           </div>
           <p class="status-bar" id="testStatus"></p>
         </div>
@@ -137,7 +202,7 @@
             <span class="target-count" data-key="net">—</span>
           </div>
           <div class="target-row">
-            <input type="checkbox" value="people" checked />
+            <input type="checkbox" value="people" />
             <span class="dot" style="background:#a371f7"></span>
             <span class="target-name">People</span>
             <span class="target-count" data-key="people">—</span>
@@ -154,7 +219,7 @@
           <div class="field"><label>Epochs</label><input id="inpEpochs" type="number" value="50" min="1" /></div>
           <div class="field"><label>Batch size</label><input id="inpBatch" type="number" value="1" min="1" /></div>
           <div class="field"><label>Learning rate</label><input id="inpLR" type="number" value="0.0001" step="0.00001" /></div>
-          <div class="field"><label>Image size</label><input id="inpImgSize" type="number" value="384" min="128" step="32" /></div>
+          <div class="field"><label>Image size</label><input id="inpImgSize" type="number" value="320" min="128" step="32" /></div>
           <div class="field augment-row">
             <label><input type="checkbox" id="inpAugment" checked /> Augment during training (each batch step: new random ±45° roll per image)</label>
             <p class="hint">Applied in the training loop when a batch is used — not precomputed on the dataset. No flips.</p>
@@ -163,11 +228,30 @@
         <div class="card">
           <h2>Test</h2>
           <button class="btn" id="btnTest">🔍 Test on random image</button>
+          <div class="field" style="margin-top:10px;">
+            <label>Labeled image</label>
+            <select id="selLabeledImage">
+              <option value="">Loading…</option>
+            </select>
+          </div>
+          <div class="btn-row">
+            <button class="btn" id="btnAnalyzeLabel">Analyze labeled image</button>
+            <button class="btn" id="btnAnalyzeNN">Analyze with NN too</button>
+          </div>
           <p class="status-bar" id="testInfo"></p>
         </div>
       </div>
     </div>
   </div>
-  <script src="/static/train.js?v=11"></script>
+  <script src="/static/train.js?v=54"></script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+

@@ -31,6 +31,10 @@
 services:
   labeler:
     build: .
+    environment:
+      DATA_DIR: /data
+      TRAINER_BASIC_AUTH_USER: "${TRAINER_BASIC_AUTH_USER:-trainer}"
+      TRAINER_BASIC_AUTH_PASS: "${TRAINER_BASIC_AUTH_PASS:-}"
     ports:
       - "${LABELER_HOST_PORT:-8081}:8080"
     volumes:

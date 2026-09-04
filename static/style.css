@@ -14,6 +14,7 @@ body.labeler-shell {
   flex-direction: column;
   min-height: 100vh;
   min-height: 100dvh;
+  overflow: hidden;
 }
 
 body.hub-shell {
@@ -688,6 +689,16 @@ code {
   flex-direction: column;
   min-height: 100vh;
   min-height: 100dvh;
+  overflow: hidden;
+  --labeler-tabbar-h: 38px;
+}
+
+.labeler-tabbar {
+  position: sticky;
+  top: 0;
+  z-index: 31;
+  min-height: var(--labeler-tabbar-h);
+  background: #0d1117;
 }
 
 .labeler-topbar {
@@ -696,6 +707,9 @@ code {
   padding: 4px 6px;
   border-bottom: 1px solid #30363d;
   background: #161b22;
+  position: sticky;
+  top: var(--labeler-tabbar-h);
+  z-index: 30;
 }
 
 .labeler-panel-row,
@@ -795,13 +809,18 @@ code {
 
 .labeler-stage {
   flex: 1 1 auto;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   background: #0d1117;
   padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  overscroll-behavior: contain;
 }
 
 .labeler-stage canvas {
@@ -812,6 +831,25 @@ code {
   height: auto;
   min-height: 0;
   object-fit: contain;
+}
+
+.focus-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.focus-marker {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #ff4fd8;
+  border: 2px solid #ff4fd8;
+  box-shadow: 0 0 8px rgba(255, 79, 216, 0.3);
+  transform: translate(-50%, -50%);
 }
 
 .labeler-statusbar {

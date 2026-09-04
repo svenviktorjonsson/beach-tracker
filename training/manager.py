@@ -62,6 +62,7 @@ class TrainingManager:
         self._optimizer: Any = None
         self._device: Any = None
         self._initial_state_dict: dict | None = None
+        self._predict_temporal_state: Any = None
 
     # ── status / pub-sub ──────────────────────────────────────────────
 
@@ -106,8 +107,9 @@ class TrainingManager:
         epochs: int = 50,
         batch_size: int = 1,
         lr: float = 1e-4,
-        image_size: int = 384,
+        image_size: int = 320,
         targets: list[str] | None = None,
+        model_profile: str = "fast",
         resume: bool = False,
         augment: bool = True,
         **_kw: Any,
@@ -127,7 +129,8 @@ class TrainingManager:
             "batch_size": batch_size,
             "lr": lr,
             "image_size": image_size,
-            "targets": targets or ["court", "net", "ball", "people"],
+            "targets": targets or ["court", "net", "ball"],
+            "model_profile": model_profile,
             "augment": augment,
         }
 
@@ -191,61 +194,107 @@ class TrainingManager:
 
     # ── model / checkpoint ────────────────────────────────────────────
 
-    def _build_model(self) -> None:
+    @staticmethod
+    def _resolve_geometry_profile(profile: str) -> tuple[float, int, bool]:
+        """Resolve speed/quality profile -> (width_mult, hidden_dim, freeze_backbone)."""
+        key = (profile or "fast").strip().lower()
+        if key == "quality":
+            return 1.0, 192, False
+        if key == "balanced":
+            return 0.5, 128, True
+        # fast (default): prioritize low latency.
+        return 0.4, 96, True
+
+    def _build_model(self, enable_detector: bool = False, model_profile: str = "fast") -> None:
         import torch
         from .model import BeachVolleyballMultiTask
 
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
         self._device = torch.device(device_str)
-        num_det = 1 + len(DETECTION_CLASS_NAMES)
+        model_has_detector = getattr(self, "_detector_enabled", None)
+        profile = (model_profile or self.config.get("model_profile") or os.environ.get("BEACH_MODEL_PROFILE", "fast")).strip().lower()
+        geom_width, geom_hidden, geom_freeze = self._resolve_geometry_profile(profile)
+        try:
+            geom_width = float(os.environ.get("BEACH_GEOMETRY_WIDTH", str(geom_width)))
+            geom_hidden = max(32, int(os.environ.get("BEACH_GEOMETRY_HIDDEN", str(geom_hidden))))
+            geom_freeze_env = os.environ.get("BEACH_GEOMETRY_FREEZE", str(int(geom_freeze))).strip().lower()
+            geom_freeze = geom_freeze_env not in {"0", "false", "no", "off"}
+        except (TypeError, ValueError):
+            pass
+        force_rebuild = self._model is None or model_has_detector != enable_detector
+        force_rebuild = force_rebuild or getattr(self, "_geom_width", None) != geom_width
+        force_rebuild = force_rebuild or getattr(self, "_geom_hidden", None) != geom_hidden
+        force_rebuild = force_rebuild or getattr(self, "_geom_freeze", None) != geom_freeze
+        force_rebuild = force_rebuild or getattr(self, "_geom_profile", None) != profile
 
+        num_det = 1 + len(DETECTION_CLASS_NAMES)
         ckpt_path = self.checkpoint_dir / "beach_multitask.pt"
-        if self._model is None:
-            self._broadcast({"type": "info", "message": f"Loading model ({device_str})…"})
+
+        if force_rebuild:
+            if self._model is not None:
+                self._broadcast({
+                    "type": "info",
+                    "message": (
+                        f"Rebuilding model (detector={enable_detector}) for requested target set."
+                    ),
+                })
             self._model = BeachVolleyballMultiTask(
                 num_detection_classes=num_det,
                 pretrained_detection=True,
                 pretrained_geometry=True,
+                enable_detector=enable_detector,
+                geometry_width_mult=geom_width,
+                geometry_hidden=geom_hidden,
+                freeze_geometry_backbone=geom_freeze,
             )
-            ckpt: dict | None = None
-            if ckpt_path.exists():
-                self._broadcast({"type": "info", "message": "Loading checkpoint…"})
+
+        if force_rebuild:
+            self._detector_enabled = enable_detector
+            self._geom_profile = profile
+            self._geom_width = geom_width
+            self._geom_hidden = geom_hidden
+            self._geom_freeze = geom_freeze
+            msg = (
+                f"Loading geometry-only model ({device_str})…"
+                if not enable_detector
+                else f"Loading model ({device_str})…"
+            )
+            self._broadcast({"type": "info", "message": msg})
+
+        ckpt: dict | None = None
+        if force_rebuild and ckpt_path.exists():
+            self._broadcast({"type": "info", "message": "Loading checkpoint…"})
+            try:
+                ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                self._model.load_state_dict(ckpt["model_state_dict"], strict=False)
+                print(f"[train] Resumed model from {ckpt_path}")
+            except Exception as e:
+                bad = ckpt_path.with_suffix(".pt.corrupt")
                 try:
-                    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-                    self._model.load_state_dict(ckpt["model_state_dict"], strict=False)
-                    print(f"[train] Resumed model from {ckpt_path}")
-                except Exception as e:
-                    bad = ckpt_path.with_suffix(".pt.corrupt")
-                    try:
-                        ckpt_path.rename(bad)
-                    except OSError:
-                        ckpt_path.unlink(missing_ok=True)
-                    msg = (
-                        f"Checkpoint was corrupted ({e!s}); removed it and using fresh pretrained weights."
-                    )
-                    print(f"[train] {msg}")
-                    self._broadcast({"type": "info", "message": msg})
+                    ckpt_path.rename(bad)
+                except OSError:
+                    ckpt_path.unlink(missing_ok=True)
+                msg = (
+                    f"Checkpoint was corrupted ({e!s}); removed it and using fresh pretrained weights."
+                )
+                print(f"[train] {msg}")
+                self._broadcast({"type": "info", "message": msg})
 
-            self._broadcast({"type": "info", "message": f"Moving model to {device_str}…"})
-            self._model.to(self._device)
+        self._broadcast({"type": "info", "message": f"Moving model to {device_str}…"})
+        self._model.to(self._device)
 
+        if force_rebuild:
             self._initial_state_dict = copy.deepcopy(self._model.state_dict())
 
-            self._optimizer = torch.optim.AdamW(
-                self._model.parameters(), lr=self.config.get("lr", 1e-4)
-            )
-
-            if ckpt is not None and "optimizer_state_dict" in ckpt:
-                try:
-                    self._optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-                except Exception:
-                    pass
-            self._broadcast({"type": "info", "message": "Model ready."})
-        else:
-            if self._optimizer is None:
-                self._optimizer = torch.optim.AdamW(
-                    self._model.parameters(), lr=self.config.get("lr", 1e-4)
-                )
+        self._optimizer = torch.optim.AdamW(
+            self._model.parameters(), lr=self.config.get("lr", 1e-4)
+        )
+        if ckpt is not None and "optimizer_state_dict" in ckpt:
+            try:
+                self._optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            except Exception:
+                pass
+        self._broadcast({"type": "info", "message": "Model ready."})
 
     def _save_checkpoint(self) -> None:
         import torch
@@ -260,10 +309,15 @@ class TrainingManager:
             "model_state_dict": self._model.state_dict(),
             "optimizer_state_dict": self._optimizer.state_dict() if self._optimizer else {},
             "config": {
-                "image_size": self.config.get("image_size", 640),
+                "image_size": self.config.get("image_size", 320),
                 "num_detection_classes": 1 + len(DETECTION_CLASS_NAMES),
+                "detector_enabled": bool(getattr(self, "_detector_enabled", False)),
                 "max_court_pts": MAX_COURT_PTS,
                 "max_net_pts": MAX_NET_PTS,
+                "geometry_profile": getattr(self, "_geom_profile", None),
+                "geometry_width_mult": getattr(self, "_geom_width", None),
+                "geometry_hidden": getattr(self, "_geom_hidden", None),
+                "geometry_backbone_frozen": getattr(self, "_geom_freeze", None),
                 "detection_class_names": list(DETECTION_CLASS_NAMES),
                 "label_schema_version": 2,
             },
@@ -285,6 +339,10 @@ class TrainingManager:
             "court_mask": torch.stack([b["court_mask"] for b in batch]),
             "net_pts": torch.stack([b["net_pts"] for b in batch]),
             "net_mask": torch.stack([b["net_mask"] for b in batch]),
+            "ball_center": torch.stack([b["ball_center"] for b in batch]),
+            "ball_radius": torch.stack([b["ball_radius"] for b in batch]),
+            "ball_size_labeled": torch.stack([b["ball_size_labeled"] for b in batch]),
+            "ball_visible": torch.stack([b["ball_visible"] for b in batch]),
         }
 
     # ── loss helpers ──────────────────────────────────────────────────
@@ -305,43 +363,28 @@ class TrainingManager:
         }
 
     @staticmethod
-    def _geometry_loss(pred, gt_court_pts, gt_court_mask, gt_net_pts, gt_net_mask):
+    def _geometry_loss(
+        pred,
+        gt_court_pts,
+        gt_court_mask,
+        gt_net_pts,
+        gt_net_mask,
+        gt_ball_center,
+        gt_ball_visible,
+        gt_ball_radius,
+        gt_ball_size_labeled,
+    ):
         """
-        Polyline-aware geometry loss.
+        Fixed-point geometry loss.
 
-        The human labels are sampled polylines with variable point counts, not stable semantic
-        landmarks. So instead of comparing point i to point i directly, resample both predicted
-        and GT polylines densely along arc length and compare the resulting curves.
+        Court targets are exported as ordered orthopoints (up to 4 visible lines),
+        while net targets are exported as ordered semantic points. That means point
+        identities are stable enough again for direct coordinate supervision.
         """
         import torch
         import torch.nn.functional as F
 
-        def _resample_polyline(points: torch.Tensor, samples: int = 48) -> torch.Tensor:
-            if points.shape[0] == 1:
-                return points.repeat(samples, 1)
-            seg = points[1:] - points[:-1]
-            seg_len = torch.sqrt(torch.clamp((seg * seg).sum(dim=1), min=1e-12))
-            cum = torch.cat(
-                [
-                    torch.zeros(1, device=points.device, dtype=points.dtype),
-                    torch.cumsum(seg_len, dim=0),
-                ],
-                dim=0,
-            )
-            total_len = cum[-1]
-            if float(total_len.detach()) <= 1e-8:
-                return points[:1].repeat(samples, 1)
-            t = torch.linspace(
-                0.0, 1.0, samples, device=points.device, dtype=points.dtype
-            ) * total_len
-            idx = torch.bucketize(t, cum[1:], right=False)
-            idx = torch.clamp(idx, 0, points.shape[0] - 2)
-            seg_start = cum[idx]
-            seg_denom = torch.clamp(seg_len[idx], min=1e-8)
-            alpha = ((t - seg_start) / seg_denom).unsqueeze(1)
-            return points[idx] + alpha * (points[idx + 1] - points[idx])
-
-        def _curve_loss(
+        def _point_loss(
             pred_pts: torch.Tensor,
             pred_vis: torch.Tensor,
             gt_pts: torch.Tensor,
@@ -349,25 +392,18 @@ class TrainingManager:
         ) -> torch.Tensor:
             vis_target = gt_mask.float()
             vis_loss = F.binary_cross_entropy_with_logits(pred_vis, vis_target)
-            total_gt = int(gt_mask.sum().item())
-            if total_gt <= 0:
+            if not bool(gt_mask.any()):
                 return vis_loss
-            gt_curve = _resample_polyline(gt_pts[gt_mask], samples=64)
-            # Use the first N predicted points to define the predicted curve; visibility still
-            # learns which slots are active, while the geometry loss becomes independent of the
-            # original click count along the line.
-            pred_curve = _resample_polyline(pred_pts[:total_gt], samples=64)
-            d = torch.cdist(pred_curve, gt_curve, p=2)
-            # Symmetric point-to-curve distance approximates line-to-line distance while staying differentiable.
-            curve_loss = d.min(dim=1).values.mean() + d.min(dim=0).values.mean()
-            return curve_loss + vis_loss
+            coord_loss = F.smooth_l1_loss(pred_pts[gt_mask], gt_pts[gt_mask])
+            return coord_loss + vis_loss
 
         batch_n = gt_court_pts.shape[0]
         court_losses = []
         net_losses = []
+        ball_losses = []
         for b in range(batch_n):
             court_losses.append(
-                _curve_loss(
+                _point_loss(
                     pred["court_pts"][b],
                     pred["court_vis"][b],
                     gt_court_pts[b],
@@ -375,18 +411,41 @@ class TrainingManager:
                 )
             )
             net_losses.append(
-                _curve_loss(
+                _point_loss(
                     pred["net_pts"][b],
                     pred["net_vis"][b],
                     gt_net_pts[b],
                     gt_net_mask[b],
                 )
             )
+            ball_vis = gt_ball_visible[b].unsqueeze(0)
+            pred_ball_vis = pred["ball_vis"][b : b + 1]
+            ball_coord_loss = torch.tensor(0.0, device=gt_court_pts.device)
+            if gt_ball_visible[b]:
+                ball_coord_loss = F.smooth_l1_loss(pred["ball_center"][b], gt_ball_center[b])
+                if gt_ball_size_labeled[b]:
+                    ball_coord_loss = ball_coord_loss + F.smooth_l1_loss(
+                        pred["ball_radius"][b : b + 1],
+                        gt_ball_radius[b : b + 1],
+                    )
+            ball_losses.append(
+                F.binary_cross_entropy_with_logits(pred_ball_vis, ball_vis.float()) + ball_coord_loss
+            )
 
         court_loss = torch.stack(court_losses).mean() if court_losses else torch.tensor(0.0, device=gt_court_pts.device)
         net_loss = torch.stack(net_losses).mean() if net_losses else torch.tensor(0.0, device=gt_net_pts.device)
-        total = court_loss + net_loss
-        return total, float(court_loss.detach()), float(net_loss.detach())
+        ball_loss = torch.stack(ball_losses).mean() if ball_losses else torch.tensor(0.0, device=gt_court_pts.device)
+        try:
+            ball_weight = float(os.environ.get("BEACH_BALL_LOSS_WEIGHT", "1.5"))
+        except (TypeError, ValueError):
+            ball_weight = 1.0
+        total = court_loss + net_loss + ball_weight * ball_loss
+        return (
+            total,
+            float(court_loss.detach()),
+            float(net_loss.detach()),
+            float(ball_loss.detach()),
+        )
 
     @staticmethod
     def _split_det_losses(det_losses, targets):
@@ -418,11 +477,11 @@ class TrainingManager:
 
     def _should_train_det(self) -> bool:
         tgt = self.config.get("targets", [])
-        return "ball" in tgt or "people" in tgt
+        return "people" in tgt
 
     def _should_train_geo(self) -> bool:
         tgt = self.config.get("targets", [])
-        return "court" in tgt or "net" in tgt
+        return "court" in tgt or "net" in tgt or "ball" in tgt
 
     def _eval_baseline(self, loader, train_det, train_geo, total_batches, dataset_size):
         """Forward pass on first batch without gradients to get baseline loss."""
@@ -450,8 +509,20 @@ class TrainingManager:
                 court_mask = batch["court_mask"].to(self._device)
                 net_pts = batch["net_pts"].to(self._device)
                 net_mask = batch["net_mask"].to(self._device)
-                _, loss_court, loss_net = self._geometry_loss(
-                    geo_pred, court_pts, court_mask, net_pts, net_mask
+                ball_center = batch["ball_center"].to(self._device)
+                ball_radius = batch["ball_radius"].to(self._device).reshape(-1)
+                ball_size_labeled = batch["ball_size_labeled"].to(self._device)
+                ball_visible = batch["ball_visible"].to(self._device)
+                _, loss_court, loss_net, loss_ball = self._geometry_loss(
+                    geo_pred,
+                    court_pts,
+                    court_mask,
+                    net_pts,
+                    net_mask,
+                    ball_center,
+                    ball_visible,
+                    ball_radius,
+                    ball_size_labeled,
                 )
 
             rec = LossRecord(
@@ -472,15 +543,30 @@ class TrainingManager:
         from torch.utils.data import DataLoader
 
         from .augment import augment_collated_batch
-        from .dataset import BeachAnnotationDataset
+        from .dataset import BeachCSVDataset
+        from .export_sqlite_to_csv import export_sqlite_to_csv
 
         try:
+            train_det = self._should_train_det()
+            train_geo = self._should_train_geo()
             self._broadcast({"type": "info", "message": "Initializing model (downloading weights on first run)…"})
-            self._build_model()
-            self._broadcast({"type": "info", "message": "Scanning labeled images…"})
-            img_sz = self.config.get("image_size", 640)
+            self._build_model(enable_detector=train_det, model_profile=self.config.get("model_profile", "fast"))
+            self._broadcast({"type": "info", "message": "Exporting SQLite labels to training tables…"})
+            img_sz = self.config.get("image_size", 320)
             use_aug = self.config.get("augment", True)
-            ds = BeachAnnotationDataset(
+            csv_dir = self.data_root / "training_v2_csv"
+            export_counts = export_sqlite_to_csv(self.data_root, csv_dir, pass_n=1, complete_only=True)
+            self._broadcast({
+                "type": "info",
+                "message": (
+                    "Using SQLite-backed training data: "
+                    f"{export_counts['total']} frames, "
+                    f"court={export_counts['court']}, net={export_counts['net']}, "
+                    f"people={export_counts['people']}, ball={export_counts['ball']}."
+                ),
+            })
+            ds = BeachCSVDataset(
+                csv_dir=csv_dir,
                 data_root=self.data_root,
                 image_size=img_sz,
             )
@@ -508,8 +594,6 @@ class TrainingManager:
             loader = DataLoader(ds, shuffle=True, **dl_common)
             total_batches = (len(ds) + bs - 1) // bs
 
-            train_det = self._should_train_det()
-            train_geo = self._should_train_geo()
             start_epoch = self.current_epoch + 1
             total = self.config.get("epochs", 50)
 
@@ -580,8 +664,13 @@ class TrainingManager:
                         court_mask = batch["court_mask"].to(self._device)
                         net_pts = batch["net_pts"].to(self._device)
                         net_mask = batch["net_mask"].to(self._device)
-                        loss_geo_total, b_court, b_net = self._geometry_loss(
+                        ball_center = batch["ball_center"].to(self._device)
+                        ball_radius = batch["ball_radius"].to(self._device).reshape(-1)
+                        ball_size_labeled = batch["ball_size_labeled"].to(self._device)
+                        ball_visible = batch["ball_visible"].to(self._device)
+                        loss_geo_total, b_court, b_net, b_ball = self._geometry_loss(
                             geo_pred, court_pts, court_mask, net_pts, net_mask
+                            , ball_center, ball_visible, ball_radius, ball_size_labeled
                         )
 
                     loss = loss_det_total + loss_geo_total
@@ -637,14 +726,22 @@ class TrainingManager:
 
     # ── inference ─────────────────────────────────────────────────────
 
-    def predict(self, image_path: str | Path, image_size: int = 640) -> dict:
-        """Run inference on a single image, returning detections + geometry keypoints."""
+    def predict(self, image_path: str | Path, image_size: int = 320) -> dict:
+        """Run inference on a single image, returning coarse proposals + camera seed."""
         import torch
         from PIL import Image
         import torchvision.transforms.functional as TF
+        from .camera_solver import (
+            build_camera_model_seed,
+            estimate_ball_radius_prior,
+            parse_frame_index,
+            refine_camera_model_from_court_lines,
+            smooth_geometry_with_temporal_prior,
+            update_temporal_state,
+        )
 
         if self._model is None:
-            self._build_model()
+            self._build_model(model_profile=self.config.get("model_profile", "fast"))
 
         self._model.eval()
         device = self._device
@@ -654,8 +751,13 @@ class TrainingManager:
         img_resized = img.resize((image_size, image_size), Image.BILINEAR)
         tensor = TF.to_tensor(img_resized).to(device)
 
+        detections: list[dict] = []
+        ball_point: dict[str, float | bool | int] | None = None
         with torch.no_grad():
-            preds = self._model.detector([tensor])
+            if self._model.detector is not None:
+                preds = self._model.detector([tensor])
+            else:
+                preds = [{"boxes": torch.empty((0, 4), device=device), "labels": torch.empty((0,), device=device, dtype=torch.long), "scores": torch.empty((0,), device=device)}]
             geo = self._model.geometry(tensor.unsqueeze(0))
 
         # ── detections ──
@@ -667,45 +769,129 @@ class TrainingManager:
         sx = orig_w / image_size
         sy = orig_h / image_size
 
-        detections = []
-        for i in range(len(boxes)):
-            if scores[i] < 0.3:
-                continue
-            b = boxes[i]
-            lbl = int(labels[i])
-            cls_name = DETECTION_CLASS_NAMES[lbl - 1] if 1 <= lbl <= len(DETECTION_CLASS_NAMES) else "unknown"
-            detections.append({
-                "box": [float(b[0] * sx), float(b[1] * sy), float(b[2] * sx), float(b[3] * sy)],
-                "label": cls_name,
-                "score": float(scores[i]),
-            })
+        if preds:
+            boxes = preds[0]["boxes"].cpu().numpy()
+            labels = preds[0]["labels"].cpu().numpy()
+            scores = preds[0]["scores"].cpu().numpy()
+            for i in range(len(boxes)):
+                if scores[i] < 0.3:
+                    continue
+                b = boxes[i]
+                lbl = int(labels[i])
+                cls_name = (
+                    DETECTION_CLASS_NAMES[lbl - 1]
+                    if 1 <= lbl <= len(DETECTION_CLASS_NAMES)
+                    else "unknown"
+                )
+                detections.append({
+                    "box": [float(b[0] * sx), float(b[1] * sy), float(b[2] * sx), float(b[3] * sy)],
+                    "label": cls_name,
+                    "score": float(scores[i]),
+                })
 
         # ── geometry keypoints ──
         court_pts = geo["court_pts"][0].cpu().numpy()  # (max_court, 2) in [0,1]
         court_vis = torch.sigmoid(geo["court_vis"][0]).cpu().numpy()
         net_pts = geo["net_pts"][0].cpu().numpy()
         net_vis = torch.sigmoid(geo["net_vis"][0]).cpu().numpy()
+        ball_center = geo["ball_center"][0].cpu().numpy()
+        ball_radius = torch.sigmoid(geo["ball_radius"][0]).item()
+        ball_visible = torch.sigmoid(geo["ball_vis"][0]).item()
 
         court_points = []
+        court_scores = []
         for i in range(len(court_pts)):
             if court_vis[i] > 0.5:
                 court_points.append([
                     float(court_pts[i][0] * orig_w),
                     float(court_pts[i][1] * orig_h),
                 ])
+                court_scores.append(float(court_vis[i]))
 
         net_points = []
+        net_scores = []
         for i in range(len(net_pts)):
             if net_vis[i] > 0.5:
                 net_points.append([
                     float(net_pts[i][0] * orig_w),
                     float(net_pts[i][1] * orig_h),
                 ])
+                net_scores.append(float(net_vis[i]))
+        if ball_visible > 0.5:
+            ball_point = {
+                "center_x": float(ball_center[0] * orig_w),
+                "center_y": float(ball_center[1] * orig_h),
+                "radius_prior": float(ball_radius),
+                "visible": True,
+            }
+
+        frame_index = parse_frame_index(Path(image_path).name)
+        smoothed_court, smoothed_net, smoothed_ball = smooth_geometry_with_temporal_prior(
+            frame_index=frame_index,
+            court_points=court_points,
+            net_points=net_points,
+            ball_center=(
+                [float(ball_point["center_x"]), float(ball_point["center_y"])]
+                if ball_point is not None
+                else None
+            ),
+            prev_state=self._predict_temporal_state,
+        )
+
+        refined_ball = None
+        if ball_point is not None and smoothed_ball is not None:
+            refined_ball = {
+                "center_x": float(smoothed_ball[0]),
+                "center_y": float(smoothed_ball[1]),
+                "radius_prior": float(estimate_ball_radius_prior(
+                    image_width=orig_w,
+                    image_height=orig_h,
+                    net_points=smoothed_net,
+                )),
+                "visible": True,
+            }
+
+        camera_model_seed = build_camera_model_seed(
+            image_width=orig_w,
+            image_height=orig_h,
+            court_points=smoothed_court,
+            court_scores=court_scores,
+            net_points=smoothed_net,
+            net_scores=net_scores,
+            ball_point=refined_ball,
+        )
+        camera_model = refine_camera_model_from_court_lines(
+            seed_model=camera_model_seed,
+            image_width=orig_w,
+            image_height=orig_h,
+            court_points=smoothed_court,
+            net_points=smoothed_net,
+        )
+        self._predict_temporal_state = update_temporal_state(
+            frame_index=frame_index,
+            court_points=smoothed_court,
+            net_points=smoothed_net,
+            ball_center=(
+                [float(refined_ball["center_x"]), float(refined_ball["center_y"])]
+                if refined_ball is not None
+                else None
+            ),
+            prev_state=self._predict_temporal_state,
+        )
 
         return {
             "image_width": orig_w,
             "image_height": orig_h,
             "detections": detections,
-            "court_points": court_points,
-            "net_points": net_points,
+            "court_points": smoothed_court,
+            "net_points": smoothed_net,
+            "ball": refined_ball,
+            "coarse_proposals": {
+                "court_points": court_points,
+                "court_scores": court_scores,
+                "net_points": net_points,
+                "net_scores": net_scores,
+                "ball": ball_point,
+            },
+            "camera_model": camera_model,
         }
